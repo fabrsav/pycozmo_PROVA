@@ -1,0 +1,24 @@
+# Local secrets and signing keys
+.private/
+*.keystore
+*.jks
+*.env
+.env.*
+
+# Android build outputs and APK artifacts
+cozmo-s200/build/
+cozmo-s200/dist/
+cozmo-s200/upstream/
+*.apk
+*.idsig
+
+# Python caches, envs, and simulation logs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+cozmo-embodied-os/logs/
+
+# OS / editor noise
+.DS_Store
+*.swp

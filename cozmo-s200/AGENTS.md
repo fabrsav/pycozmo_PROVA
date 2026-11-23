@@ -1,0 +1,14 @@
+# Cozmo S200
+
+- Il target fisico verificato è DOOGEE S200, Android 16/API 36/arm64, ADB Tailscale `100.94.42.57:5555`. Verificarlo sempre prima di modifiche. Non usare ReDroid come destinazione.
+- Questo progetto usa il protocollo reale di PyCozmo, commit fissato in THIRD_PARTY.md. Il progetto precedente `cozmo-embodied-os` contiene un framing simulato e non è un driver reale.
+- Build nativa ARM: `bash build.sh`. Usa aapt2 Debian con android-34.jar; il wrapper `~/bin/aapt2` punta a un binario temporaneo mancante. Aapt2 Debian non legge le risorse compresse di android-35.jar.
+- Il limite 1051 byte vale per i frame inviati al robot, non per i datagrammi della camera ricevuti. Il test large-image lo protegge.
+- Sul firmware fisico 2381, il primo ImageChunk ha image_chunk_count=0 e il conteggio finale compare nell'ultimo chunk. Encoding e risoluzione sono presi dal primo chunk. Non richiedere metadati ripetuti identici su tutti i chunk. CameraAssembler ha una prova di regressione sui valori osservati.
+- Tailscale deve escludere solo `dev.s200.cozmo`: il VPN bypass predefinito è negato e Network.bindSocket altrimenti fallisce con EPERM. Non disattivare Tailscale. Nell'interfaccia osservata il menu account è in alto a destra; l'interruttore VPN è a sinistra. Usare etichette accessibili e stato corrente.
+- Per verifiche UI usare l'instrumentation separata in tests/device: clicca controlli per testo e non riavvia l'app del robot. Gli aggiornamenti e la rotazione possono spostare i pulsanti. Non usare coordinate vecchie né cliccare alla cieca.
+- Attendere la telemetria prima di cliccare i controlli: un clic corretto non prova che un comando sia stato accettato. Per testo con spazi oltre `adb shell`, usare scripts/device_click.py con shlex.join; le sole virgolette della shell host non proteggono l'argomento nella shell Android.
+- Credenziali Wi-Fi solo sul telefono con Android Keystore. Non inserire password in sorgenti, APK, archivi o log condivisi. Escludere `.private/`, `build/`, `upstream/` dagli archivi sorgente.
+- Distinguere test host, installazione APK, handshake reale, telemetria e conferma fisica di un attuatore. Gli ACK non dimostrano da soli un effetto visibile.
+- Ritentare il RESET di handshake fino a CONNECT o timeout: un singolo datagramma subito dopo associazione/aggiornamento può non ricevere risposta. Il test UDP separato perde il primo pacchetto e richiede la riconnessione entro tre secondi. Dopo CONNECT non inviare altri RESET nella sessione.
+- Per i comandi dei giunti usare limiti fisici inclusivi: restringere il minimo sopra la posizione corrente può invertire la direzione di un comando meno. I cingoli hanno lease 250 ms, testa/carrello 850 ms e supervisione telemetria 350 ms.
