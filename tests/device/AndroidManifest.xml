@@ -1,0 +1,5 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="dev.s200.cozmo.checks">
+    <uses-sdk android:minSdkVersion="29" android:targetSdkVersion="34"/>
+    <application android:label="Cozmo Device Checks" android:debuggable="true" android:testOnly="true"/>
+    <instrumentation android:name="dev.s200.cozmo.checks.DeviceChecks" android:targetPackage="dev.s200.cozmo.checks" android:functionalTest="true"/>
+</manifest>
