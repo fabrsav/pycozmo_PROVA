@@ -1,0 +1,5 @@
+{
+  "name": "Cozmo S200 Digital Twin",
+  "description": "Console web e Digital Twin interattivo per Anki Cozmo S200 con fisica sul tavolo, anteprima occhi OLED 128x32, supervisore di sicurezza e pianificatore L3 grounded.",
+  "requestFramePermissions": []
+}

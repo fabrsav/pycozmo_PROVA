@@ -1,0 +1,462 @@
+<!doctype html>
+<html lang="it">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Cozmo S200 Digital Twin</title>
+  <meta name="description" content="Console web e Digital Twin interattivo per Anki Cozmo S200 con fisica sul tavolo, anteprima occhi OLED 128x32, supervisore di sicurezza e pianificatore L3 grounded." />
+  <meta property="og:title" content="Cozmo S200 Digital Twin" />
+  <meta property="og:description" content="Console web e Digital Twin interattivo per Anki Cozmo S200 con fisica sul tavolo, anteprima occhi OLED 128x32, supervisore di sicurezza e pianificatore L3 grounded." />
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: #0b0f0e;
+      color: #dfe8e4;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    header {
+      padding: 12px 16px;
+      background: #111a17;
+      border-bottom: 1px solid #24332e;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: center;
+      justify-content: space-between;
+    }
+    h1 { font-size: 17px; margin: 0; letter-spacing: 0.01em; }
+    h2 { font-size: 13px; margin: 0 0 8px 0; color: #9fc2b4; text-transform: uppercase; letter-spacing: 0.05em; }
+    main.wrap {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 360px;
+      gap: 14px;
+      padding: 14px;
+      max-width: 1400px;
+      margin: 0 auto;
+    }
+    @media (max-width: 860px) {
+      main.wrap { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: #111a17;
+      border: 1px solid #24332e;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 12px;
+    }
+    .visuals {
+      display: grid;
+      grid-template-columns: 1fr 220px;
+      gap: 12px;
+      align-items: start;
+    }
+    @media (max-width: 680px) {
+      .visuals { grid-template-columns: 1fr; }
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      background: #070b0a;
+      border: 1px solid #1e2c27;
+      border-radius: 8px;
+    }
+    .oled-panel {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+    .oled-meta {
+      font-size: 12px;
+      color: #93b3a6;
+      line-height: 1.4;
+    }
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    button {
+      background: #1f8a68;
+      color: #04120d;
+      border: 0;
+      border-radius: 8px;
+      padding: 8px 12px;
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    button:hover { background: #27a37b; }
+    button:focus-visible, input:focus-visible {
+      outline: 2px solid #5eead4;
+      outline-offset: 2px;
+    }
+    button.ghost {
+      background: #22302b;
+      color: #cfe0d8;
+    }
+    button.ghost:hover { background: #2c3e38; }
+    button.warn {
+      background: #d97706;
+      color: #140a02;
+    }
+    button.warn:hover { background: #f59e0b; }
+    label {
+      display: block;
+      font-size: 12px;
+      color: #9fc2b4;
+      margin-bottom: 6px;
+    }
+    .ask-row {
+      display: flex;
+      gap: 6px;
+    }
+    input[type="text"] {
+      flex: 1;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #2d3c36;
+      background: #0e1513;
+      color: #eaf2ee;
+      font-size: 13px;
+    }
+    #ans {
+      font-size: 13px;
+      margin-top: 8px;
+      color: #bfe9d9;
+      min-height: 18px;
+    }
+    pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 11px;
+      line-height: 1.45;
+      max-height: 250px;
+      overflow: auto;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      color: #c2d6ce;
+    }
+    .tag {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 99px;
+      background: #1d2a26;
+      border: 1px solid #2a3e37;
+      margin: 2px;
+      font-size: 12px;
+      color: #cfe0d8;
+    }
+    .tag.alert {
+      background: #451a03;
+      border-color: #b45309;
+      color: #fde68a;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Cozmo S200 · Digital Twin</h1>
+    <div id="stat" aria-live="polite"><span class="tag">connessione…</span></div>
+  </header>
+
+  <main class="wrap">
+    <div>
+      <section class="card">
+        <h2>Vista Tavolo &amp; Display OLED</h2>
+        <div class="visuals">
+          <canvas id="tableCanvas" width="560" height="420" data-testid="table-canvas" aria-label="Simulazione tavolo Cozmo"></canvas>
+          <div class="oled-panel">
+            <canvas id="oledCanvas" width="256" height="128" data-testid="oled-canvas" aria-label="Display OLED occhi Cozmo"></canvas>
+            <div class="oled-meta" id="oledMeta">Espressione: neutral<br/>Testa: 0.08 rad · Lift: 32 mm</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Eventi live (SSE)</h2>
+        <pre id="ev">connessione al bus eventi…</pre>
+      </section>
+    </div>
+
+    <div>
+      <section class="card">
+        <h2>Controllo fisico &amp; Riflessi</h2>
+        <div class="row">
+          <button type="button" onclick="cmd('pickup')">Prendi</button>
+          <button type="button" onclick="cmd('release')">Rilascia</button>
+          <button type="button" class="warn" onclick="cmd('cliff')">Soffio del tavolo</button>
+          <button type="button" class="ghost" onclick="cmd('reset')">Ripristina centro</button>
+          <button type="button" class="ghost" onclick="cmd('face_happy')">Faccia felice</button>
+          <button type="button" class="ghost" onclick="cmd('face_question')">Faccia curiosa</button>
+          <button type="button" class="ghost" onclick="cmd('speak_hello')">Voce</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Chiedi a Cozmo (L3 Grounding)</h2>
+        <form id="askForm" onsubmit="ask(event)">
+          <label for="q">Comando in italiano (es. "gira verso la tazza", "vai al cubo", "sorridi")</label>
+          <div class="ask-row">
+            <input id="q" type="text" placeholder="es. gira verso la tazza" autocomplete="off" />
+            <button type="submit">Chiedi</button>
+          </div>
+        </form>
+        <div id="ans" aria-live="polite"></div>
+      </section>
+
+      <section class="card">
+        <h2>Stato telemetria</h2>
+        <pre id="state">…</pre>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const evEl = document.getElementById('ev');
+    const stEl = document.getElementById('state');
+    const statEl = document.getElementById('stat');
+    const ansEl = document.getElementById('ans');
+    const oledMetaEl = document.getElementById('oledMeta');
+    const tableCanvas = document.getElementById('tableCanvas');
+    const tableCtx = tableCanvas.getContext('2d');
+    const oledCanvas = document.getElementById('oledCanvas');
+    const oledCtx = oledCanvas.getContext('2d');
+
+    let latestState = null;
+    const eventLines = [];
+
+    function pushEventLine(line) {
+      eventLines.push(line);
+      while (eventLines.length > 50) eventLines.shift();
+      evEl.textContent = eventLines.join('\n');
+      evEl.scrollTop = evEl.scrollHeight;
+    }
+
+    const es = new EventSource('/events');
+    es.onmessage = (e) => {
+      pushEventLine(e.data);
+    };
+
+    function drawTable(state) {
+      const w = tableCanvas.width;
+      const h = tableCanvas.height;
+      tableCtx.clearRect(0, 0, w, h);
+
+      // Void background
+      tableCtx.fillStyle = '#050807';
+      tableCtx.fillRect(0, 0, w, h);
+
+      // Tabletop 500x400 mm mapped to canvas
+      const padX = 30;
+      const padY = 20;
+      const tw = w - padX * 2;
+      const th = h - padY * 2;
+      const toX = (mmX) => padX + ((mmX + 250) / 500) * tw;
+      const toY = (mmY) => padY + ((200 - mmY) / 400) * th;
+
+      tableCtx.fillStyle = '#0e1714';
+      tableCtx.strokeStyle = state.cliff ? '#f59e0b' : '#264239';
+      tableCtx.lineWidth = 2;
+      tableCtx.fillRect(padX, padY, tw, th);
+      tableCtx.strokeRect(padX, padY, tw, th);
+
+      // Subtle grid
+      tableCtx.strokeStyle = 'rgba(60, 110, 92, 0.16)';
+      tableCtx.lineWidth = 1;
+      for (let x = -200; x <= 200; x += 50) {
+        tableCtx.beginPath();
+        tableCtx.moveTo(toX(x), padY);
+        tableCtx.lineTo(toX(x), padY + th);
+        tableCtx.stroke();
+      }
+      for (let y = -150; y <= 150; y += 50) {
+        tableCtx.beginPath();
+        tableCtx.moveTo(padX, toY(y));
+        tableCtx.lineTo(padX + tw, toY(y));
+        tableCtx.stroke();
+      }
+
+      // Objects
+      for (const obj of state.objects || []) {
+        const ox = toX(obj.x);
+        const oy = toY(obj.y);
+        tableCtx.save();
+        if (obj.kind === 'cube') {
+          tableCtx.fillStyle = '#1e3a5f';
+          tableCtx.strokeStyle = '#38bdf8';
+          tableCtx.lineWidth = 1.5;
+          tableCtx.fillRect(ox - 12, oy - 12, 24, 24);
+          tableCtx.strokeRect(ox - 12, oy - 12, 24, 24);
+        } else if (obj.kind === 'mug') {
+          tableCtx.fillStyle = '#4a2511';
+          tableCtx.strokeStyle = '#f97316';
+          tableCtx.beginPath();
+          tableCtx.arc(ox, oy, 13, 0, Math.PI * 2);
+          tableCtx.fill();
+          tableCtx.stroke();
+        } else if (obj.kind === 'face') {
+          tableCtx.fillStyle = '#193b2d';
+          tableCtx.strokeStyle = '#34d399';
+          tableCtx.beginPath();
+          tableCtx.arc(ox, oy, 15, 0, Math.PI * 2);
+          tableCtx.fill();
+          tableCtx.stroke();
+        } else {
+          tableCtx.fillStyle = '#3b3315';
+          tableCtx.strokeStyle = '#eab308';
+          tableCtx.beginPath();
+          tableCtx.arc(ox, oy, 10, 0, Math.PI * 2);
+          tableCtx.fill();
+          tableCtx.stroke();
+        }
+        tableCtx.fillStyle = '#cde3da';
+        tableCtx.font = '11px system-ui, sans-serif';
+        tableCtx.textAlign = 'center';
+        tableCtx.fillText(obj.label || obj.kind, ox, oy - 17);
+        tableCtx.restore();
+      }
+
+      // Active navigation goal
+      if (state.nav_goal) {
+        const gx = toX(state.nav_goal.x);
+        const gy = toY(state.nav_goal.y);
+        tableCtx.strokeStyle = '#2dd4bf';
+        tableCtx.setLineDash([4, 4]);
+        tableCtx.beginPath();
+        tableCtx.arc(gx, gy, 20, 0, Math.PI * 2);
+        tableCtx.stroke();
+        tableCtx.setLineDash([]);
+      }
+
+      // Cozmo chassis
+      const rx = toX(state.pose.x);
+      const ry = toY(state.pose.y);
+      tableCtx.save();
+      tableCtx.translate(rx, ry);
+      tableCtx.rotate(-state.pose.theta);
+
+      // Camera FOV cone
+      tableCtx.fillStyle = 'rgba(45, 212, 191, 0.08)';
+      tableCtx.beginPath();
+      tableCtx.moveTo(0, 0);
+      tableCtx.arc(0, 0, 110, -0.45, 0.45);
+      tableCtx.closePath();
+      tableCtx.fill();
+
+      // Tracks
+      tableCtx.fillStyle = '#1f2937';
+      tableCtx.fillRect(-18, -17, 36, 6);
+      tableCtx.fillRect(-18, 11, 36, 6);
+
+      // Body
+      tableCtx.fillStyle = state.estop ? '#b45309' : '#e2e8f0';
+      tableCtx.strokeStyle = '#0f172a';
+      tableCtx.lineWidth = 2;
+      tableCtx.fillRect(-15, -12, 30, 24);
+      tableCtx.strokeRect(-15, -12, 30, 24);
+
+      // Visor / heading
+      tableCtx.fillStyle = '#0ea5e9';
+      tableCtx.fillRect(8, -8, 6, 16);
+
+      tableCtx.restore();
+    }
+
+    function drawOled(face) {
+      const w = oledCanvas.width;
+      const h = oledCanvas.height;
+      oledCtx.fillStyle = '#03080a';
+      oledCtx.fillRect(0, 0, w, h);
+
+      oledCtx.fillStyle = '#38e8ff';
+      const drawEye = (cx, cy, rw, rh, topCut, botCut) => {
+        oledCtx.beginPath();
+        oledCtx.roundRect(cx - rw / 2, cy - rh / 2, rw, rh, 14);
+        oledCtx.fill();
+        oledCtx.fillStyle = '#03080a';
+        if (topCut > 0) oledCtx.fillRect(cx - rw / 2 - 2, cy - rh / 2 - 2, rw + 4, topCut);
+        if (botCut > 0) oledCtx.fillRect(cx - rw / 2 - 2, cy + rh / 2 - botCut, rw + 4, botCut + 2);
+        oledCtx.fillStyle = '#38e8ff';
+      };
+
+      if (face === 'happy') {
+        drawEye(84, 66, 54, 56, 0, 24);
+        drawEye(172, 66, 54, 56, 0, 24);
+      } else if (face === 'question') {
+        drawEye(84, 64, 50, 52, 12, 0);
+        drawEye(172, 60, 56, 64, 0, 0);
+      } else if (face === 'surprised') {
+        drawEye(84, 64, 58, 72, 0, 0);
+        drawEye(172, 64, 58, 72, 0, 0);
+      } else if (face === 'sad') {
+        drawEye(84, 68, 52, 48, 18, 0);
+        drawEye(172, 68, 52, 48, 18, 0);
+      } else if (face === 'sleepy') {
+        drawEye(84, 70, 54, 24, 0, 0);
+        drawEye(172, 70, 54, 24, 0, 0);
+      } else {
+        drawEye(84, 64, 52, 58, 0, 0);
+        drawEye(172, 64, 52, 58, 0, 0);
+      }
+    }
+
+    function renderState(j) {
+      latestState = j;
+      stEl.textContent = JSON.stringify(j, null, 2);
+      const estopClass = j.estop ? 'tag alert' : 'tag';
+      statEl.innerHTML =
+        '<span class="tag">L1 ' + j.l1_ticks + ' tick</span>' +
+        '<span class="tag">umore ' + j.mood + '</span>' +
+        '<span class="tag">faccia ' + j.face + '</span>' +
+        '<span class="' + estopClass + '">' + (j.estop ? ('ESTOP: ' + j.estop_reason) : 'attivo') + '</span>';
+      oledMetaEl.innerHTML =
+        'Espressione: <strong>' + j.face + '</strong><br/>' +
+        'Testa: ' + j.head.toFixed(2) + ' rad · Lift: ' + j.lift.toFixed(0) + ' mm<br/>' +
+        'Batteria: ' + (j.battery_mv / 1000).toFixed(2) + ' V · Cliff: ' + j.cliff;
+      drawTable(j);
+      drawOled(j.face);
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch('/api/state');
+        if (res.ok) {
+          const j = await res.json();
+          renderState(j);
+        }
+      } catch {
+        // retry on next tick
+      }
+      setTimeout(poll, 250);
+    }
+    poll();
+
+    async function cmd(action) {
+      const res = await fetch('/api/cmd', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.state) renderState(data.state);
+      }
+    }
+
+    async function ask(event) {
+      if (event) event.preventDefault();
+      const input = document.getElementById('q');
+      const text = input.value.trim();
+      if (!text) return;
+      const res = await fetch('/api/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const data = await res.json();
+      ansEl.textContent = data.answer || data.error || JSON.stringify(data);
+    }
+  </script>
+</body>
+</html>
