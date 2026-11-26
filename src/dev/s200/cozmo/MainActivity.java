@@ -17,6 +17,7 @@ import java.util.Locale;
 
 public final class MainActivity extends Activity implements UiCallbacks {
     private static final int PERM_REQ = 2;
+    private Intent pendingWifiConnection;
 
     private FrameLayout host;
     private CompanionTab tabCompanion;
@@ -54,8 +55,13 @@ public final class MainActivity extends Activity implements UiCallbacks {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(UiKit.BG_APP);
         root.setOnApplyWindowInsetsListener((v, insets) -> {
-            android.graphics.Insets b = insets.getInsets(WindowInsets.Type.systemBars());
-            v.setPadding(0, b.top, 0, b.bottom);
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                Insets b = insets.getInsets(WindowInsets.Type.systemBars());
+                v.setPadding(b.left, b.top, b.right, b.bottom);
+            } else {
+                v.setPadding(insets.getSystemWindowInsetLeft(), insets.getSystemWindowInsetTop(),
+                        insets.getSystemWindowInsetRight(), insets.getSystemWindowInsetBottom());
+            }
             return insets;
         });
         setContentView(root);
@@ -63,13 +69,12 @@ public final class MainActivity extends Activity implements UiCallbacks {
         // ---- Top Bar ----
         LinearLayout topBar = new LinearLayout(this);
         topBar.setOrientation(LinearLayout.HORIZONTAL);
+        topBar.setGravity(Gravity.CENTER_VERTICAL);
         topBar.setBackgroundColor(UiKit.BG_BAR);
         topBar.setPadding(UiKit.dp(this, 10), UiKit.dp(this, 8), UiKit.dp(this, 10), UiKit.dp(this, 8));
         View divider = new View(this);
         divider.setBackgroundColor(0xFF1E3545);
         LinearLayout.LayoutParams divLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 1);
-        divLp.topMargin = UiKit.dp(this, 52);
-        root.addView(divider, divLp);
 
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.HORIZONTAL);
@@ -93,11 +98,6 @@ public final class MainActivity extends Activity implements UiCallbacks {
         left.addView(stateTag);
         topBar.addView(left, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
 
-        TextView barMid = new TextView(this);
-        barMid.setGravity(Gravity.CENTER);
-        barMid.setTextColor(UiKit.TEXT_SECONDARY);
-        barMid.setTextSize(12);
-        barMid.setTypeface(null, Typeface.BOLD);
         barBattery = new TextView(this);
         barBattery.setText("—");
         barBattery.setTextColor(UiKit.TEXT_PRIMARY);
@@ -106,22 +106,20 @@ public final class MainActivity extends Activity implements UiCallbacks {
         barMotors.setText("Motori bloccati");
         barMotors.setTextColor(UiKit.TEXT_SECONDARY);
         barMotors.setTextSize(13);
-        topBar.addView(barMid, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
-
         LinearLayout right = new LinearLayout(this);
-        right.setOrientation(LinearLayout.HORIZONTAL);
-        right.setGravity(Gravity.CENTER_VERTICAL);
+        right.setOrientation(LinearLayout.VERTICAL);
+        right.setGravity(Gravity.END);
         right.addView(barBattery);
-        right.addView(UiKit.spacer(this, 8, 0));
         right.addView(barMotors);
-        right.addView(UiKit.spacer(this, 12, 0));
+        topBar.addView(right);
+        topBar.addView(UiKit.spacer(this, 12, 0));
         btnStop = UiKit.actionButton(this, "STOP", UiKit.DANGER, Color.WHITE);
         btnStop.setText("■  STOP");
         btnStop.setTextSize(13);
         btnStop.setOnClickListener(v -> onEmergencyStop());
-        right.addView(btnStop);
-        topBar.addView(right, new LinearLayout.LayoutParams(0, LayoutParams.WRAP_CONTENT, 1f));
+        topBar.addView(btnStop);
         root.addView(topBar);
+        root.addView(divider, divLp);
 
         // ---- Host centrale (4 schede) ----
         host = new FrameLayout(this);
@@ -129,11 +127,11 @@ public final class MainActivity extends Activity implements UiCallbacks {
         tabDrive = new DriveTab(this, this);
         tabMind = new MindTab(this, this);
         tabSystem = new SystemTab(this, this);
+        tabSystem.setWifiCredentials(savedSsid(), Secrets.read(this));
         host.addView(tabCompanion.getView());
         host.addView(tabDrive.getView());
         host.addView(tabMind.getView());
         host.addView(tabSystem.getView());
-        showTab(0);
         LinearLayout.LayoutParams hostLp = new LinearLayout.LayoutParams(LayoutParams.MATCH_PARENT, 0, 1f);
         root.addView(host, hostLp);
 
@@ -156,6 +154,7 @@ public final class MainActivity extends Activity implements UiCallbacks {
         bottom.addView(navMind, new LinearLayout.LayoutParams(0, UiKit.dp(this, 58), 1f));
         bottom.addView(navSystem, new LinearLayout.LayoutParams(0, UiKit.dp(this, 58), 1f));
         root.addView(bottom);
+        showTab(currentTab);
 
         startService(new Intent(this, RobotService.class));
         applyIntent(getIntent());
@@ -190,7 +189,7 @@ public final class MainActivity extends Activity implements UiCallbacks {
                 navs[i].setTextColor(UiKit.TEXT_MUTED);
             }
         }
-        if (index == 1) ((DriveTab) tabDrive).attachDpad();
+        if (index != 1) ((DriveTab) tabDrive).stopDpadMotors();
         refreshUi();
     }
 
@@ -247,6 +246,11 @@ public final class MainActivity extends Activity implements UiCallbacks {
     }
 
     @Override public void onEmergencyStop() { serviceAction("STOP"); }
+    @Override public void onOpenConnection() {
+        // The connection controls live in the System tab.
+        showTab(3);
+        tabSystem.focusConnection();
+    }
     @Override public void onPet() { care("comfort"); }
     @Override public void onPlay() { care("play"); }
     @Override public void onSelectPersonality(String id) {
@@ -263,7 +267,7 @@ public final class MainActivity extends Activity implements UiCallbacks {
     @Override public void onPlayVocalization(String id) { withService(s -> s.playVocal(id)); }
     @Override public void onSetBackpackColor(int colorInt) {
         String preset = nearestPreset(colorInt);
-        withService(s -> s.link.setBackpackColor(preset));
+        withLink(l -> l.setBackpackColor(preset));
     }
     @Override public void onToggleHeadlight(boolean enabled) {
         withLink(l -> l.setHeadLight(enabled));
@@ -280,15 +284,16 @@ public final class MainActivity extends Activity implements UiCallbacks {
     @Override public void onToggleAutonomousWheels(boolean enabled) {
         withService(s -> s.setAutonomousConfig(s.autonomousEnabled(), s.autonomousVoiceEnabled(), s.autonomousMotionEnabled(), enabled));
     }
-    @Override public void onToggleCamera() {
-        RobotService s = svc();
-        if (s != null) s.cameraToggle(s.cameraImage == null);
-        else startService(new Intent(this, RobotService.class).setAction("CAMERA").putExtra("enabled", true));
+    @Override public void onSetCameraEnabled(boolean enabled) {
+        withService(s -> s.cameraToggle(enabled));
     }
     @Override public void onSnapPhoto() { serviceAction("SNAPSHOT"); }
     @Override public void onArmMotors() { serviceAction("ARM"); }
     @Override public void onDrive(float l, float r) { startService(new Intent(this, RobotService.class).setAction("DRIVE").putExtra("left", l).putExtra("right", r)); }
-    @Override public void onStopMotors() { withLink(Link::stopMotion); }
+    @Override public void onStopMotors() {
+        Link l = link();
+        if (l != null) l.stopMotion();
+    }
     @Override public void onMoveHead(float deltaOrTargetRad) {
         startService(new Intent(this, RobotService.class).setAction("HEAD").putExtra("delta", deltaOrTargetRad));
     }
@@ -307,9 +312,11 @@ public final class MainActivity extends Activity implements UiCallbacks {
         startService(new Intent(this, RobotService.class).setAction("AI_PROMPT").putExtra("prompt", prompt));
     }
     @Override public void onConnectWifi(String ssid, String password) {
-        connectWifi(ssid, password);
+        connectWifi(ssid, password, false);
     }
-    @Override public void onConnectExistingWifi() { connectWifiFromPrefs(); }
+    @Override public void onConnectExistingWifi(String ssid) {
+        connectWifi(ssid, "", true);
+    }
     @Override public void onDisconnect() { serviceAction("DISCONNECT"); }
     @Override public void onToggleStartupHead(boolean enabled) {
         startService(new Intent(this, RobotService.class).setAction("AUTO_HEAD").putExtra("enabled", enabled));
@@ -318,13 +325,46 @@ public final class MainActivity extends Activity implements UiCallbacks {
         startService(new Intent(this, RobotService.class).setAction("AUTO_SHUTDOWN").putExtra("enabled", enabled));
     }
     @Override public void onPowerOffRobot() { serviceAction("SHUTDOWN"); }
+    @Override public void onOpenLauncherApp(String packageName) {
+        // Cozmo è registrata come app Home: serve un modo esplicito per tornare al dock WebView
+        // o al drawer di sistema senza passare dal resolver.
+        Intent intent = null;
+        if (packageName != null && !packageName.trim().isEmpty()) {
+            try { intent = getPackageManager().getLaunchIntentForPackage(packageName); } catch (Exception ignored) { }
+        }
+        if (intent == null) {
+            // Cozmo è il default HOME, quindi ACTION_MAIN/CATEGORY_HOME risolverebbe di nuovo su
+            // Cozmo stesso. Puntiamo direttamente al launcher di sistema (QuickstepLauncher),
+            // con fallback su ACTION_MAIN/CATEGORY_HOME se il pacchetto non è quello atteso.
+            intent = new Intent();
+            intent.setClassName("com.android.launcher3", "com.android.launcher3.uioverrides.QuickstepLauncher");
+            try {
+                intent.resolveActivity(getPackageManager());
+                if (intent.resolveActivity(getPackageManager()) == null) intent = null;
+            } catch (Exception ignored) { intent = null; }
+        }
+        if (intent == null) {
+            intent = new Intent(Intent.ACTION_MAIN);
+            intent.addCategory(Intent.CATEGORY_HOME);
+        }
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        try {
+            // Ferma i motori prima di lasciare Cozmo: fail-safe.
+            ((DriveTab) tabDrive).stopDpadMotors();
+            startActivity(intent);
+        } catch (Exception e) {
+            Toast.makeText(this, "Impossibile aprire: " + packageName, Toast.LENGTH_LONG).show();
+        }
+    }
+    @Override public void onOpenSystemSettings() {
+        Intent intent = new Intent(android.provider.Settings.ACTION_SETTINGS);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(intent);
+    }
     @Override public void onSaveGeminiKey(String apiKey) {
         startService(new Intent(this, RobotService.class).setAction("AI_KEY").putExtra("key", apiKey));
     }
     @Override public void onTestGeminiKey() { serviceAction("AI_TEST"); }
-    @Override public void onStartFirmwareRecovery() {
-        serviceAction("RECOVER_FIRMWARE_2381");
-    }
 
     private void care(String kind) {
         if (svc() != null) svc().careInteraction(kind);
@@ -350,25 +390,43 @@ public final class MainActivity extends Activity implements UiCallbacks {
     private interface ServiceAction { void run(RobotService s); }
     private interface LinkAction { void run(Link l); }
 
-    private void connectWifi(String ssid, String password) {
+    private String wifiPermission() {
+        return Build.VERSION.SDK_INT >= 33 ? Manifest.permission.NEARBY_WIFI_DEVICES : Manifest.permission.ACCESS_FINE_LOCATION;
+    }
+
+    private void connectWifi(String ssid, String password, boolean existing) {
         if (!ssid.startsWith("Cozmo_")) { toast("Controlla il nome esatto della rete Cozmo"); return; }
-        if (password.length() < 8) { toast("Inserisci la password mostrata sul robot"); return; }
-        String wifi = android.os.Build.VERSION.SDK_INT >= 33 ? Manifest.permission.NEARBY_WIFI_DEVICES : Manifest.permission.ACCESS_FINE_LOCATION;
+        if (!existing && password.length() < 8) { toast("Inserisci la password mostrata sul robot"); return; }
+        Intent connection = new Intent(this, RobotService.class).setAction("CONNECT")
+            .putExtra("ssid", ssid).putExtra("password", password).putExtra("existing", existing);
+        String wifi = wifiPermission();
         if (checkSelfPermission(wifi) != PackageManager.PERMISSION_GRANTED) {
+            pendingWifiConnection = connection;
             requestPermissions(new String[]{wifi}, PERM_REQ);
             return;
         }
-        getSharedPreferences("robot", 0).edit().putString("ssid", ssid).apply();
-        Intent i = new Intent(this, RobotService.class).setAction("CONNECT")
-            .putExtra("ssid", ssid).putExtra("password", password).putExtra("existing", false);
-        startForegroundService(i);
+        startForegroundService(connection);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int request, String[] permissions, int[] grants) {
+        super.onRequestPermissionsResult(request, permissions, grants);
+        if (request != PERM_REQ || pendingWifiConnection == null) return;
+        Intent connection = pendingWifiConnection;
+        pendingWifiConnection = null;
+        if (checkSelfPermission(wifiPermission()) == PackageManager.PERMISSION_GRANTED) {
+            startForegroundService(connection);
+        } else {
+            toast("Permesso Wi-Fi necessario per collegare Cozmo");
+        }
+    }
+
+    private String savedSsid() {
+        return getSharedPreferences("robot", 0).getString("ssid", "Cozmo_71278E");
     }
 
     private void connectWifiFromPrefs() {
-        SharedPreferences p = getSharedPreferences("robot", 0);
-        String s = p.getString("ssid", "Cozmo_71278E");
-        String pass = Secrets.read(this);
-        connectWifi(s, pass);
+        connectWifi(savedSsid(), Secrets.read(this), false);
     }
 
     private String nearestPreset(int colorInt) {
@@ -387,15 +445,17 @@ public final class MainActivity extends Activity implements UiCallbacks {
 
     private void refreshUi() {
         RobotService s = svc();
-        Link l = link();
+        Link l = s != null ? s.link : null;
         boolean connected = l != null && l.stateAge() < 350;
+        boolean factoryFirmware = l != null && l.isFactoryFirmware();
+        boolean visualOnly = l != null && l.isVisualOnly();
 
         // Top bar
         if (stateDot != null) {
-            int dotColor = connected ? UiKit.OK : (s != null && (s.link.isFactoryFirmware() || s.link.isVisualOnly()) ? UiKit.WARN : 0xFF5E7B8F);
+            int dotColor = connected ? UiKit.OK : (factoryFirmware || visualOnly ? UiKit.WARN : 0xFF5E7B8F);
             stateDot.setBackground(UiKit.box(this, dotColor, Color.TRANSPARENT, 999, 0));
             stateText.setText(s != null ? s.status : "Disconnesso");
-            stateTag.setText(connected ? (l.isFactoryFirmware() ? "FACTORY" : l.isVisualOnly() ? "VISUAL" : "LIVE") : "—");
+            stateTag.setText(connected ? (factoryFirmware ? "FACTORY" : visualOnly ? "VISUAL" : "LIVE") : "—");
         }
 
         Wire.Telemetry t = tel();
@@ -412,8 +472,8 @@ public final class MainActivity extends Activity implements UiCallbacks {
         UiState st = new UiState();
         st.connected = connected;
         st.connecting = !connected && s != null;
-        st.visualOnly = l != null && l.isVisualOnly();
-        st.factoryFirmware = l != null && l.isFactoryFirmware();
+        st.visualOnly = visualOnly;
+        st.factoryFirmware = factoryFirmware;
         st.connectionLabel = s != null ? s.status : "Disconnesso";
         if (t != null) {
             st.batteryVolts = t.battery;
@@ -423,6 +483,7 @@ public final class MainActivity extends Activity implements UiCallbacks {
             st.cliff = t.cliff.clone();
         }
         st.armed = l != null && l.armed();
+        st.canArm = l != null && !l.armed() && l.canArm();
         st.armRemainingSec = l != null ? (int) ((l.armRemainingMs() + 999) / 1000) : 0;
         st.jointBlockReason = l != null ? l.jointBlockReason() : "";
         st.wheelBlockReason = l != null ? l.wheelBlockReason() : "";
@@ -453,12 +514,12 @@ public final class MainActivity extends Activity implements UiCallbacks {
             }
             st.cubesSummary = s.cubes != null ? s.cubes.summary(Link.now()) : "Nessun cubo collegato";
             st.cubesConnected = s.cubes != null && s.cubes.connectedCount() > 0;
+            st.quickTapActive = s.cubes != null && s.cubes.isQuickTapActive();
             st.knownPeople = s.memoryDb != null ? knownPeopleNames(s.memoryDb) : Collections.emptyList();
             st.geminiMode = s.aiPolicy().name();
             st.geminiStatus = s.lastAiSummary;
             st.geminiLastIntent = s.lastIntention != null ? s.lastIntention.summary(Link.now()) : "";
             st.geminiKeyConfigured = s.hasGeminiKey();
-            st.wifiSsid = getSharedPreferences("robot", 0).getString("ssid", "");
             st.startupHeadOnCharger = getSharedPreferences("robot", 0).getBoolean("auto_head_on_dock", true);
             st.criticalBatteryShutdown = l != null ? l.isAutoShutdownLowBattery() : getSharedPreferences("robot", 0).getBoolean("auto_shutdown_low_battery", true);
             st.recoveryRunning = l != null && l.isRecoveringFirmware();

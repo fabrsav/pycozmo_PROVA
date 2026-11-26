@@ -1,6 +1,9 @@
 package dev.s200.cozmo.ui;
 
+import dev.s200.cozmo.R;
 import android.content.Context;
+import android.content.res.ColorStateList;
+import android.graphics.drawable.RippleDrawable;
 import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
@@ -16,25 +19,25 @@ import android.widget.ProgressBar;
 import android.widget.TextView;
 
 public final class UiKit {
-    public static final int BG_APP = Color.parseColor("#081118");
-    public static final int BG_BAR = Color.parseColor("#0C1924");
-    public static final int BG_CARD = Color.parseColor("#11212D");
-    public static final int BORDER_CARD = Color.parseColor("#1E3545");
-    public static final int BG_CHIP = Color.parseColor("#182D3C");
-    public static final int BG_INPUT = Color.parseColor("#0D1B26");
+    public static final int BG_APP = Color.parseColor("#0A1219");
+    public static final int BG_BAR = Color.parseColor("#101B24");
+    public static final int BG_CARD = Color.parseColor("#14232D");
+    public static final int BORDER_CARD = Color.parseColor("#2B404C");
+    public static final int BG_CHIP = Color.parseColor("#1C313C");
+    public static final int BG_INPUT = Color.parseColor("#101D26");
 
-    public static final int ACCENT = Color.parseColor("#4DE4F0");
-    public static final int ACCENT_DARK = Color.parseColor("#072228");
-    public static final int WARN = Color.parseColor("#FFAE42");
-    public static final int WARN_BG = Color.parseColor("#332510");
-    public static final int DANGER = Color.parseColor("#FF4D5E");
-    public static final int DANGER_BG = Color.parseColor("#381218");
-    public static final int OK = Color.parseColor("#38D996");
-    public static final int OK_BG = Color.parseColor("#103024");
+    public static final int ACCENT = Color.parseColor("#83F4CB");
+    public static final int ACCENT_DARK = Color.parseColor("#0C2B23");
+    public static final int WARN = Color.parseColor("#FFD49A");
+    public static final int WARN_BG = Color.parseColor("#382C1D");
+    public static final int DANGER = Color.parseColor("#FF9B91");
+    public static final int DANGER_BG = Color.parseColor("#3D2428");
+    public static final int OK = Color.parseColor("#83F4CB");
+    public static final int OK_BG = Color.parseColor("#15382F");
 
-    public static final int TEXT_PRIMARY = Color.parseColor("#F1F7FB");
-    public static final int TEXT_SECONDARY = Color.parseColor("#92AEC0");
-    public static final int TEXT_MUTED = Color.parseColor("#5E7B8F");
+    public static final int TEXT_PRIMARY = Color.parseColor("#F2F7F6");
+    public static final int TEXT_SECONDARY = Color.parseColor("#B5C9D1");
+    public static final int TEXT_MUTED = Color.parseColor("#96AEB9");
 
     private UiKit() {}
 
@@ -57,7 +60,7 @@ public final class UiKit {
         LinearLayout ll = new LinearLayout(c);
         ll.setOrientation(LinearLayout.VERTICAL);
         ll.setBackground(box(c, BG_CARD, BORDER_CARD, 16, 1));
-        int p = dp(c, 14);
+        int p = dp(c, 16);
         ll.setPadding(p, p, p, p);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -79,11 +82,11 @@ public final class UiKit {
         TextView tv = new TextView(c);
         tv.setText(text);
         tv.setTextColor(TEXT_PRIMARY);
-        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        tv.setTextSize(TypedValue.COMPLEX_UNIT_SP, 19);
         tv.setTypeface(Typeface.DEFAULT_BOLD);
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        lp.bottomMargin = dp(c, 8);
+        lp.bottomMargin = dp(c, 12);
         tv.setLayoutParams(lp);
         return tv;
     }
@@ -135,21 +138,26 @@ public final class UiKit {
         b.setTextColor(textColor);
         b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
         b.setTypeface(Typeface.DEFAULT_BOLD);
-        b.setBackground(box(c, bgColor, BORDER_CARD, 12, 1));
-        b.setMinimumHeight(dp(c, 42));
-        b.setMinHeight(dp(c, 42));
-        b.setPadding(dp(c, 12), dp(c, 6), dp(c, 12), dp(c, 6));
+        b.setStateListAnimator(null);
+        b.setMinWidth(0);
+        b.setMinimumWidth(0);
+        b.setBackground(buttonSurface(c, bgColor, bgColor == BG_CHIP ? BORDER_CARD : bgColor));
+        b.setMinimumHeight(dp(c, 48));
+        b.setMinHeight(dp(c, 48));
+        b.setPadding(dp(c, 9), dp(c, 6), dp(c, 9), dp(c, 6));
         return b;
     }
 
+    public static RippleDrawable buttonSurface(Context c, int fill, int stroke) {
+        return new RippleDrawable(ColorStateList.valueOf(0x407ECDB0), box(c, fill, stroke, 12, 1), null);
+    }
+
     public static void styleChip(Context c, Button b, boolean active) {
-        if (active) {
-            b.setBackground(box(c, ACCENT, ACCENT, 999, 1));
-            b.setTextColor(ACCENT_DARK);
-        } else {
-            b.setBackground(box(c, BG_CHIP, BORDER_CARD, 999, 1));
-            b.setTextColor(TEXT_PRIMARY);
-        }
+        if (b.getTag(R.id.chip_state) != null && b.isSelected() == active) return;
+        b.setTag(R.id.chip_state, Boolean.TRUE);
+        b.setSelected(active);
+        b.setBackground(buttonSurface(c, active ? OK_BG : BG_CHIP, active ? ACCENT : BORDER_CARD));
+        b.setTextColor(active ? ACCENT : TEXT_SECONDARY);
     }
 
     public static void setEnabledAlpha(View v, boolean enabled) {
@@ -164,6 +172,7 @@ public final class UiKit {
         et.setTextColor(TEXT_PRIMARY);
         et.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
         et.setSingleLine(true);
+        et.setMinHeight(dp(c, 48));
         et.setBackground(box(c, BG_INPUT, BORDER_CARD, 12, 1));
         et.setPadding(dp(c, 12), dp(c, 10), dp(c, 12), dp(c, 10));
         return et;
@@ -172,6 +181,8 @@ public final class UiKit {
     public static ProgressBar horizontalBar(Context c, int max) {
         ProgressBar pb = new ProgressBar(c, null, android.R.attr.progressBarStyleHorizontal);
         pb.setMax(max);
+        pb.setProgressTintList(ColorStateList.valueOf(ACCENT));
+        pb.setProgressBackgroundTintList(ColorStateList.valueOf(BG_CHIP));
         LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(c, 6));
         lp.topMargin = dp(c, 4);

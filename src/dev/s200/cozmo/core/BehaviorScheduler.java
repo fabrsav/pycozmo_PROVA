@@ -87,11 +87,13 @@ public final class BehaviorScheduler {
     private final Map<String, Long> lastRunMs = new HashMap<>();
     private long lastFaceSeenAtMs = -100_000L;
     private long lastAnyBehaviorMs = -100_000L;
+    private int idleCycle = 0;
 
     public synchronized void reset() {
         lastRunMs.clear();
         lastFaceSeenAtMs = -100_000L;
         lastAnyBehaviorMs = -100_000L;
+        idleCycle = 0;
     }
 
     private boolean onCooldown(String key, long cooldownMs, long nowMs) {
@@ -155,18 +157,19 @@ public final class BehaviorScheduler {
             lastFaceSeenAtMs = nowMs;
             float gx = w.vision.faceX * 5.5f;
             float gy = w.vision.faceY * 3.0f;
+            float targetHead = Safety.limit(w.headAngleRad - w.vision.faceY * 0.18f, -0.35f, 0.58f);
             String person = w.personality != null ? w.personality.recognizedPerson : "";
             if (person != null && !person.isEmpty()) {
                 if (faceAbsenceMs >= 45_000L || !onCooldown("GREET_FAMILIAR", 45_000L, nowMs)) {
                     markRan("GREET_FAMILIAR", nowMs);
                     return new BehaviorDecision("GREET_FAMILIAR", "GREET_FAMILIAR", AnimClip.Priority.SOCIAL_REACTION,
-                        true, gx, gy, false, 0f, w.voiceEnabled, safeForJoints, false,
+                        true, gx, gy, safeForJoints, targetHead, w.voiceEnabled, safeForJoints, false,
                         "Volto familiare riconosciuto: " + person);
                 }
-            } else if (!onCooldown("GREET_STRANGER", 35_000L, nowMs)) {
+            } else if (!onCooldown("GREET_STRANGER", 20_000L, nowMs)) {
                 markRan("GREET_STRANGER", nowMs);
                 return new BehaviorDecision("GREET_STRANGER", "GREET_STRANGER", AnimClip.Priority.SOCIAL_REACTION,
-                    true, gx, gy, false, 0f, w.voiceEnabled, safeForJoints, false,
+                    true, gx, gy, safeForJoints, targetHead, w.voiceEnabled, safeForJoints, false,
                     "Volto rilevato nella camera di Cozmo");
             }
         }
@@ -179,10 +182,13 @@ public final class BehaviorScheduler {
                 "Attività rilevata sui cubi luminosi");
         }
 
-        if (w.vision != null && w.vision.motionScore >= 0.35f && !onCooldown("MOTION_INSPECT", 22_000L, nowMs)) {
+        if (w.vision != null && w.vision.motionScore >= 0.26f && !onCooldown("MOTION_INSPECT", 10_000L, nowMs)) {
             markRan("MOTION_INSPECT", nowMs);
-            return new BehaviorDecision("CURIOUS_INSPECT", "CURIOUS_INSPECT", AnimClip.Priority.IDLE_AUTONOMOUS,
-                true, w.vision.motionX * 6.0f, w.vision.motionY * 3.0f, false, 0f,
+            String[] motionClips = {"CURIOUS_INSPECT", "PLAY_CHEER", "GREET_STRANGER"};
+            String motionClip = motionClips[Math.floorMod(idleCycle++, motionClips.length)];
+            float targetHead = Safety.limit(w.headAngleRad - w.vision.motionY * 0.16f, -0.35f, 0.58f);
+            return new BehaviorDecision(motionClip, motionClip, AnimClip.Priority.IDLE_AUTONOMOUS,
+                true, w.vision.motionX * 6.0f, w.vision.motionY * 3.0f, safeForJoints, targetHead,
                 w.voiceEnabled, safeForJoints, safeForWheels,
                 "Movimento visivo rilevato nel campo della camera");
         }
@@ -215,9 +221,25 @@ public final class BehaviorScheduler {
         if ((nowMs - lastAnyBehaviorMs) >= idleInterval && !onCooldown("IDLE_LIFE", idleInterval, nowMs)) {
             markRan("IDLE_LIFE", nowMs);
             boolean quietProfile = prof == Personality.Profile.TRANQUILLO;
-            String clip = quietProfile ? "SLEEPY_CHARGER" : "CURIOUS_INSPECT";
+            int step = Math.floorMod(idleCycle++, 3);
+            String clip;
+            if (quietProfile) {
+                clip = (step % 2 == 0) ? "SLEEPY_CHARGER" : "HAPPY_COMFORT";
+            } else if (prof == Personality.Profile.BIRICHINO) {
+                String[] biri = {"PLAY_CHEER", "CURIOUS_INSPECT", "CUBE_VICTORY"};
+                clip = biri[step];
+            } else if (prof == Personality.Profile.AFFETTUOSO) {
+                String[] aff = {"HAPPY_COMFORT", "CURIOUS_INSPECT", "PLAY_CHEER"};
+                clip = aff[step];
+            } else {
+                String[] cur = {"CURIOUS_INSPECT", "HAPPY_COMFORT", "PLAY_CHEER"};
+                clip = cur[step];
+            }
+            float[] gazeXs = {-4.5f, 4.5f, 0f};
+            float[] gazeYs = {-1.0f, 0.5f, -1.8f};
             return new BehaviorDecision("IDLE_" + prof.name(), clip, AnimClip.Priority.IDLE_AUTONOMOUS,
-                false, 0f, 0f, false, 0f, w.voiceEnabled && !quietProfile, safeForJoints, safeForWheels && !quietProfile,
+                !quietProfile, gazeXs[step], gazeYs[step], false, 0f,
+                w.voiceEnabled && !quietProfile, safeForJoints, safeForWheels && !quietProfile,
                 "Vita autonoma idle (" + prof.label + ")");
         }
 

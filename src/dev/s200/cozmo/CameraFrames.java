@@ -59,22 +59,37 @@ public final class CameraFrames {
             if(isColor&&bitmap.getWidth()==160)bitmap=Bitmap.createScaledBitmap(bitmap,320,240,false);
             int w=bitmap.getWidth(),h=bitmap.getHeight();
             long now=Link.now();
+            int[] rawArgb=new int[w*h];
+            bitmap.getPixels(rawArgb,0,w,0,0,w,h);
+            VisionAnalyzer.Result rawVr=analyzer.analyze(rawArgb,w,h,lastFaceCount,lastFaceX,lastFaceY,lastFaceConf,lastFaceEyeDist);
+            Bitmap displayBmp=bitmap;
+            if(rawVr.meanLuma<95.0f){
+                int[] enh=VisionAnalyzer.enhanceLowLightPixels(rawArgb,w,h,rawVr.meanLuma);
+                if(enh!=null){
+                    displayBmp=Bitmap.createBitmap(enh,w,h,Bitmap.Config.ARGB_8888);
+                }
+            }
+            boolean ranFaceDetect=false;
             if(now-lastFaceDetectMs>=750&&w>=64&&h>=64){
                 lastFaceDetectMs=now;
-                detectFaces(bitmap,w,h);
+                detectFaces(displayBmp,w,h);
+                ranFaceDetect=true;
             }
-            int[] argb=new int[w*h];
-            bitmap.getPixels(argb,0,w,0,0,w,h);
-            VisionAnalyzer.Result vr=analyzer.analyze(argb,w,h,lastFaceCount,lastFaceX,lastFaceY,lastFaceConf,lastFaceEyeDist);
+            VisionAnalyzer.Result vr=ranFaceDetect
+                ? new VisionAnalyzer.Result(rawVr.width,rawVr.height,rawVr.meanLuma,rawVr.contrastStd,
+                    rawVr.motionScore,rawVr.motionX,rawVr.motionY,
+                    rawVr.markerCandidates,rawVr.markerX,rawVr.markerY,rawVr.approxMarkerDistMm,
+                    lastFaceCount,lastFaceX,lastFaceY,lastFaceConf,lastFaceEyeDist)
+                : rawVr;
             boolean explicitSnap=snapshotRequested;
             if(explicitSnap||now-lastAutoSnapshotMs>=2000){
                 snapshotRequested=false;
                 lastAutoSnapshotMs=now;
-                try{writeSnapshot(bitmap,explicitSnap);}catch(Exception ignored){}
+                try{writeSnapshot(displayBmp,explicitSnap);}catch(Exception ignored){}
             }
             synchronized(this){
                 if(session==generation){
-                    service.cameraImage=bitmap;service.cameraCount++;
+                    service.cameraImage=displayBmp;service.cameraCount++;
                     service.onVisionResult(vr);
                     if(service.cameraCount%150==1)service.event("camera","frame="+service.cameraCount+" size="+w+"x"+h+" luma="+Math.round(vr.meanLuma));
                 }

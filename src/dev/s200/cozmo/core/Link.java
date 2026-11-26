@@ -59,7 +59,7 @@ public final class Link implements Runnable {
     private volatile int animationTracks;
     private volatile boolean factoryFirmware;
     private volatile FirmwareRecovery firmwareRecovery;
-    private long firstState=0,lastAudioTick=0;
+    private long firstState=0,lastAudioTick=0,lastRecoveryTxMs=0;
     private Wire.Telemetry latestState;
     private volatile long lastState=0;
     private long lastRx=0,lastPing=0,lastReset=0,lastResend=0,start=0,states=0,rx=0,tx=0,retries=0,bad=0,lastSummary=0,handshakeAt=0,warmTriggerAt=0,enableSentAt=0,initializedAt=0;
@@ -140,6 +140,15 @@ public final class Link implements Runnable {
             }
         });
     }
+    public void keepAliveArm() {
+        if (visualOnly || !motionArmed) return;
+        request(() -> {
+            long n = now();
+            if (safety.armed(n) && safety.armRemainingMs(n) < 20_000L) {
+                motionArmed = safety.arm(n);
+            }
+        });
+    }
     public void drive(float left,float right) {
         request(()->{
             long n=now();
@@ -159,7 +168,10 @@ public final class Link implements Runnable {
             if(!robotInitialized||states==0) {observer.event("rejected","Robot non ancora inizializzato");return;}
             String block = safety.jointBlockReason(n, visualOnly, factoryFirmware);
             if(!block.isEmpty()) {observer.event("rejected", block); return;}
-            ByteBuffer b=Wire.le(17);b.put(Wire.floats(target,1,4,0.6f)).put((byte)0);
+            float speed = (id == 0x37) ? 5.0f : 3.0f;
+            float accel = 16.0f;
+            float dur = (id == 0x37) ? 0.15f : 0.18f;
+            ByteBuffer b=Wire.le(17);b.put(Wire.floats(target,speed,accel,dur)).put((byte)0);
             enqueue(Wire.command(id,b.array()));safety.jointLease(n);
             observer.event("motion","Comando "+(id==0x37?"testa":"carrello")+" target="+target);
         });
@@ -236,6 +248,15 @@ public final class Link implements Runnable {
             if(!initialized) {observer.event("rejected","Attendi l'inizializzazione del robot");return;}
             enqueue(Wire.setHeadLight(enable));
             observer.event("light","Luce frontale Cozmo: "+(enable?"attiva":"spenta"));
+        });
+    }
+    public void setCameraParams(float gain, int exposureMs, boolean autoExposure) {
+        request(() -> {
+            if (!initialized) { observer.event("rejected", "Attendi l'inizializzazione del robot"); return; }
+            enqueue(Wire.setCameraParams(gain, exposureMs, autoExposure));
+            observer.event("camera_params", autoExposure
+                ? "Esposizione camera: automatica"
+                : String.format(Locale.US, "Esposizione camera: gain=%.2f exp=%dms", gain, exposureMs));
         });
     }
     public void setBackpackColor(String preset) {
@@ -339,18 +360,30 @@ public final class Link implements Runnable {
     private final AtomicBoolean emergency=new AtomicBoolean();
     public void stopMotion() {emergency.set(true);}
     private void doStop(boolean disarm) throws Exception {
-        queue.removeIf(p->(p.id>=0x32&&p.id<=0x39)||p.id==0x8e);
-        audioQueue.clear();
-        queuedAudioFramesCount=0;
-        pendingDisplay=null;
-        visualProbeImage=null;
+        if (disarm) {
+            queue.removeIf(p->(p.id>=0x32&&p.id<=0x39)||p.id==0x8e);
+            audioQueue.clear();
+            queuedAudioFramesCount=0;
+            pendingDisplay=null;
+            visualProbeImage=null;
+        } else {
+            queue.removeIf(p->p.id>=0x32&&p.id<=0x39);
+        }
         reliable.cancelMotion();
         if(disarm) {safety.disarm();motionArmed=false;startupHeadDone=true;}
         safety.stopped();
         // Replace unacknowledged motor packets before resending: an expired command must not be retried.
         for(Wire.Packet p:reliable.pending()) sendPacket(p);
         if(!reliable.full()) sendPacket(reliable.enqueue(Wire.command(0x3b)));
-        observer.event("stop","Arresto inviato; conferma fisica da verificare");
+        // Fail-safe: non attendere fino a 800 ms prima del primo resend dello stop. Forziamo
+        // lastResend nel passato e resends a 0 (backoff minimo 100 ms) così il pacchetto 0x3b viene
+        // ritentato al più presto e ripetutamente finché il robot non conferma.
+        lastResend=now()-5000; resends=0;
+        if (disarm) {
+            observer.event("stop","Arresto inviato; conferma fisica da verificare");
+        } else {
+            observer.event("motion_lease_end","Fine finestra movimento");
+        }
     }
     public void close() {stopping.set(true);}
     public void run() {
@@ -385,7 +418,12 @@ public final class Link implements Runnable {
                     enqueue(Wire.command(0x45,Wire.le(20).putInt(0).putInt(0).putInt(1).putFloat(0).putFloat(0).array()));
                     enqueue(Wire.command(0x4b,Wire.le(12).putInt(0).putInt(0).putInt(0).array()));
                 }
-                if(emergency.getAndSet(false)&&handshake&&firmwareRecovery==null)doStop(true);
+                // Fail-safe: lo stop NON deve mai essere perso. Il flag viene azzerato solo se lo stop
+                // è stato realmente eseguito; in caso contrario resta pending e viene ritentato.
+                if(emergency.get()&&handshake&&firmwareRecovery==null){
+                    emergency.set(false);
+                    doStop(true);
+                }
                 if(firmwareRecovery==null&&safety.mustStop(n))doStop(false);
                 if(handshake&&!shutdownSent&&firmwareRecovery==null&&(shutdownRequested.getAndSet(false)||(autoShutdownLowBattery&&safety.mustShutdownLowBattery(n)))){
                     shutdownSent=true;shutdownSentAt=n;
@@ -444,16 +482,19 @@ public final class Link implements Runnable {
                     lastAudioTick=n;
                 }
                 while(handshake&&!queue.isEmpty()&&!reliable.full()) {
+                    if (firmwareRecovery != null && reliable.pendingCount() > 0 && n - lastRecoveryTxMs < 30) break;
                     Wire.Packet p=reliable.enqueue(queue.removeFirst());
                     if(reliable.pendingCount()==1)lastResend=n;
                     sendPacket(p);
+                    if (firmwareRecovery != null) lastRecoveryTxMs = n;
                 }
                 if(handshake&&n-lastPing>=500) {
                     byte[] ping=Wire.le(17).putDouble(n/1000.0).putInt(pingCounter++).putInt(0).put((byte)0).array();
                     sendRaw(Wire.frame(11,Wire.OOB,Wire.OOB,reliable.lastReceived,Collections.singletonList(new Wire.Packet(11,-1,ping))));
                     lastPing=n;
                 }
-                if(lastRx>0&&reliable.pendingCount()>0&&n-lastResend>=Math.min(800,100L<<Math.min(3,resends))) {
+                long resendWait = firmwareRecovery != null ? Math.min(1200, 350L << Math.min(2, resends)) : Math.min(800, 100L << Math.min(3, resends));
+                if(lastRx>0&&reliable.pendingCount()>0&&n-lastResend>=resendWait) {
                     for(Wire.Packet p:reliable.pending()) {sendPacket(p);retries++;}
                     lastResend=n;resends++;
                 }
@@ -496,7 +537,7 @@ public final class Link implements Runnable {
                         }
                         handle(deliver);
                     }
-                    if(handshake&&!initialized&&reliable.lastReceived!=prevLastReceived&&lastRx-lastPing>=40) {
+                    if(handshake&&(!initialized||firmwareRecovery!=null)&&reliable.lastReceived!=prevLastReceived&&lastRx-lastPing>=40) {
                         byte[] ping=Wire.le(17).putDouble(lastRx/1000.0).putInt(pingCounter++).putInt(0).put((byte)0).array();
                         sendRaw(Wire.frame(11,Wire.OOB,Wire.OOB,reliable.lastReceived,Collections.singletonList(new Wire.Packet(11,-1,ping))));
                         lastPing=lastRx;
@@ -565,6 +606,11 @@ public final class Link implements Runnable {
         return safety.armRemainingMs(now());
     }
 
+    /** True when arm() would succeed right now: fresh telemetry and no safety block. */
+    public boolean canArm() {
+        return !visualOnly && !factoryFirmware && safety.ready(now()) && latestState != null && !latestState.unsafe();
+    }
+
     public String jointBlockReason() {
         return safety.jointBlockReason(now(), visualOnly, factoryFirmware);
     }
@@ -611,8 +657,8 @@ public final class Link implements Runnable {
             }
         } else if(p.id==0xef && firmwareRecovery != null) {
             FirmwareRecovery recovery = firmwareRecovery;
-            if (recovery.receive(p.data)) observer.event("firmware_recovery", recovery.outcome() != null
-                ? recovery.outcome() : "Blocchi confermati: " + recovery.confirmed());
+            String report = recovery.receive(now(), p.data);
+            if (report != null) observer.event("firmware_recovery", report);
         } else if(p.id==0xd2) {
             if (p.data.length == 44 && !factoryFirmware) {
                 factoryFirmware = true;

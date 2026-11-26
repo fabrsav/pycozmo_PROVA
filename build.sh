@@ -25,7 +25,10 @@ if [ ! -f .private/debug.keystore ]; then
   keytool -genkeypair -keystore .private/debug.keystore -storepass android -keypass android -alias androiddebugkey -dname 'CN=Cozmo S200 Debug' -keyalg RSA -keysize 2048 -validity 10000 -noprompt
 fi
 apkFile="dist/cozmo-s200-$appVersion.apk"
-cp build/aligned.apk "$apkFile"
-apksigner sign --ks .private/debug.keystore --ks-pass pass:android --key-pass pass:android "$apkFile"
-apksigner verify --verbose "$apkFile"
+# Firmare su un output separato, mai in-place: apksigner copia via java.io.tmpdir,
+# e su questo host /tmp non e' scrivibile (mount read-only mascherato da permessi 1777).
+apksigner sign --ks .private/debug.keystore --ks-pass pass:android --key-pass pass:android \
+    --out build/signed.apk build/aligned.apk
+apksigner verify --verbose build/signed.apk
+cp build/signed.apk "$apkFile"
 sha256sum "$apkFile"

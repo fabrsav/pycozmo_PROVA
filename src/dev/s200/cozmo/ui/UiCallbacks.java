@@ -5,6 +5,7 @@ public interface UiCallbacks {
     void onEmergencyStop();
 
     // Tab 1: Compagno
+    void onOpenConnection();
     void onPet();
     void onPlay();
     void onSelectPersonality(String id);
@@ -20,7 +21,7 @@ public interface UiCallbacks {
     void onToggleAutonomousWheels(boolean enabled);
 
     // Tab 2: Guida
-    void onToggleCamera();
+    void onSetCameraEnabled(boolean enabled);
     void onSnapPhoto();
     void onArmMotors();
     void onDrive(float leftMmps, float rightMmps);
@@ -37,12 +38,13 @@ public interface UiCallbacks {
 
     // Tab 4: Sistema
     void onConnectWifi(String ssid, String password);
-    void onConnectExistingWifi();
+    void onConnectExistingWifi(String ssid);
     void onDisconnect();
     void onToggleStartupHead(boolean enabled);
     void onToggleCriticalBatteryShutdown(boolean enabled);
     void onPowerOffRobot();
     void onSaveGeminiKey(String apiKey);
     void onTestGeminiKey();
-    void onStartFirmwareRecovery();
+    void onOpenLauncherApp(String packageName);
+    void onOpenSystemSettings();
 }

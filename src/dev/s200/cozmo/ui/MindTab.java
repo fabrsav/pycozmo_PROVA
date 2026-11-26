@@ -14,7 +14,7 @@ import android.widget.TextView;
 public final class MindTab {
     private final Context c;
     private final UiCallbacks cb;
-    private final LinearLayout root;
+    private final ScrollView root;
 
     private final EditText meetInput;
     private final Button btnMeet;
@@ -125,7 +125,7 @@ public final class MindTab {
         });
         container.addView(cardState);
 
-        this.root = container;
+        this.root = scroll;
     }
 
     private Button segBtn(String label) {

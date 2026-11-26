@@ -15,6 +15,7 @@ public final class UiState {
     // Batteria & sicurezza motori
     public float batteryVolts;
     public boolean onCharger;
+    public boolean canArm;
     public boolean armed;
     public int armRemainingSec;
     public String jointBlockReason = "";
@@ -44,6 +45,7 @@ public final class UiState {
     public boolean motionDetected;
     public String cubesSummary = "Nessun cubo collegato";
     public boolean cubesConnected;
+    public boolean quickTapActive;
 
     // Mente / Relazioni / Gemini
     public List<String> knownPeople = Collections.emptyList();
@@ -53,7 +55,6 @@ public final class UiState {
     public boolean geminiKeyConfigured;
 
     // Sistema / Opzioni hardware / Recovery / Diagnostica
-    public String wifiSsid = "";
     public boolean startupHeadOnCharger;
     public boolean criticalBatteryShutdown;
     public boolean recoveryRunning;

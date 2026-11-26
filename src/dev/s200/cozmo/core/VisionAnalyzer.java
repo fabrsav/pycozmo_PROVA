@@ -170,4 +170,74 @@ public final class VisionAnalyzer {
             markers, bestMarkerX, bestMarkerY, approxDistMm,
             faceCount, faceX, faceY, faceConfidence, faceEyeDistPx);
     }
+
+    /**
+     * Enhances low-light ARGB frames via percentile contrast stretch + adaptive gamma LUT
+     * so dimmed scenes and facial features become clearly visible for FaceDetector and Gemini.
+     * Returns null if enhancement is unnecessary (rawMeanLuma >= 95.0f) or buffer invalid.
+     */
+    public static int[] enhanceLowLightPixels(int[] argb, int width, int height, float rawMeanLuma) {
+        if (argb == null || width <= 0 || height <= 0 || argb.length < width * height || rawMeanLuma >= 95.0f) {
+            return null;
+        }
+        int[] hist = new int[256];
+        int totalSamples = 0;
+        for (int y = 0; y < height; y += 2) {
+            int row = y * width;
+            for (int x = 0; x < width; x += 2) {
+                int c = argb[row + x];
+                int r = (c >> 16) & 255;
+                int g = (c >> 8) & 255;
+                int b = c & 255;
+                int luma = Math.max(0, Math.min(255, (77 * r + 150 * g + 29 * b) >> 8));
+                hist[luma]++;
+                totalSamples++;
+            }
+        }
+        if (totalSamples <= 0) return null;
+
+        int loTarget = Math.max(1, (totalSamples * 2) / 100);
+        int hiTarget = Math.max(loTarget + 1, (totalSamples * 98) / 100);
+        int cum = 0, lo = 0, hi = 255;
+        boolean foundLo = false;
+        for (int i = 0; i < 256; i++) {
+            cum += hist[i];
+            if (!foundLo && cum >= loTarget) {
+                lo = i;
+                foundLo = true;
+            }
+            if (cum >= hiTarget) {
+                hi = i;
+                break;
+            }
+        }
+        if (hi - lo < 28) {
+            hi = Math.min(255, lo + 28);
+            if (hi - lo < 28) lo = Math.max(0, hi - 28);
+        }
+        float gamma = rawMeanLuma < 35f ? 0.45f : (rawMeanLuma < 60f ? 0.56f : 0.70f);
+        float span = Math.max(1f, hi - lo);
+        int[] lut = new int[256];
+        for (int v = 0; v < 256; v++) {
+            if (v <= lo) {
+                lut[v] = 6;
+            } else if (v >= hi) {
+                lut[v] = 248;
+            } else {
+                double norm = (v - lo) / span;
+                int mapped = (int) Math.round(6.0 + 242.0 * Math.pow(norm, gamma));
+                lut[v] = Math.max(0, Math.min(255, mapped));
+            }
+        }
+        int len = width * height;
+        int[] out = new int[len];
+        for (int i = 0; i < len; i++) {
+            int c = argb[i];
+            int r = lut[(c >> 16) & 255];
+            int g = lut[(c >> 8) & 255];
+            int b = lut[c & 255];
+            out[i] = 0xFF000000 | (r << 16) | (g << 8) | b;
+        }
+        return out;
+    }
 }

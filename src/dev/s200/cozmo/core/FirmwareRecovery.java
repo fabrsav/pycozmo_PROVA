@@ -13,12 +13,15 @@ final class FirmwareRecovery {
     private static final int CHUNK_SIZE = 1024;
     private static final int CHUNKS = (IMAGE_SIZE + CHUNK_SIZE - 1) / CHUNK_SIZE;
     private static final int COMMIT = 0xffff;
+    private static final int MAX_UNCONFIRMED_CHUNKS = 8;
 
     private final byte[] image;
     private int nextChunk;
     private int confirmed = -1;
     private int lastReported = -1;
     private long lastSend;
+    private long lastConfirmedAt;
+    private String lastRxSummary = "";
     private boolean committing;
     private volatile String outcome;
 
@@ -51,6 +54,7 @@ final class FirmwareRecovery {
         if (nextChunk == 0) {
             send.accept(dataPacket(nextChunk++));
             lastSend = now;
+            lastConfirmedAt = now;
             return;
         }
 
@@ -60,25 +64,43 @@ final class FirmwareRecovery {
             return;
         }
         if (nextChunk == 1 && confirmed < 0) {
-            if (elapsed >= 30_000) outcome = "Il bootloader non ha confermato il primo blocco";
+            if (elapsed >= 35_000) outcome = "Il bootloader non ha confermato il primo blocco";
             return;
         }
 
-        // Some Cozmo builds report only every second block. Require the reliable
-        // transport to drain and the flash report to trail by at most one block.
-        boolean pairConfirmed = confirmed >= nextChunk - 1;
-        boolean pairedReport = confirmed >= nextChunk - 2 && elapsed >= 650;
-        if (!transportDrained || (!pairConfirmed && !pairedReport)) {
-            if (elapsed >= 9_000) outcome = "Conferma del blocco " + (nextChunk - 1) + " assente";
+        if (!transportDrained) {
+            if (elapsed >= 15_000) outcome = "Trasporto UDP bloccato al blocco " + (nextChunk - 1);
             return;
         }
         if (nextChunk == CHUNKS) {
+            boolean readyToCommit = confirmed >= CHUNKS - 1
+                || (confirmed >= CHUNKS - 2 && elapsed >= 600)
+                || (elapsed >= 1500 && (CHUNKS - 1 - confirmed) <= MAX_UNCONFIRMED_CHUNKS);
+            if (!readyToCommit) {
+                if (now - lastConfirmedAt >= 20_000) {
+                    outcome = "Conferma finale prima del commit assente (conf=" + confirmed + "/" + (CHUNKS - 1) + ")";
+                }
+                return;
+            }
             send.accept(Wire.command(0xaf, Wire.le(2 + CHUNK_SIZE).putShort((short) COMMIT).array()));
             committing = true;
-        } else {
-            int limit = Math.min(CHUNKS, nextChunk + 2);
-            while (nextChunk < limit) send.accept(dataPacket(nextChunk++));
+            lastSend = now;
+            return;
         }
+
+        int trailing = (nextChunk - 1) - confirmed;
+        boolean pairConfirmed = trailing <= 0;
+        boolean pairedReport = trailing == 1 && elapsed >= 500;
+        boolean missedReportWindow = trailing <= MAX_UNCONFIRMED_CHUNKS && elapsed >= 650 && (now - lastConfirmedAt) < 15_000;
+        if (!pairConfirmed && !pairedReport && !missedReportWindow) {
+            if (elapsed >= 15_000 || (now - lastConfirmedAt) >= 20_000) {
+                outcome = "Conferma del blocco " + (nextChunk - 1) + " assente (conf=" + confirmed
+                    + (lastRxSummary.isEmpty() ? "" : ", " + lastRxSummary) + ")";
+            }
+            return;
+        }
+        int limit = Math.min(CHUNKS, nextChunk + 2);
+        while (nextChunk < limit) send.accept(dataPacket(nextChunk++));
         lastSend = now;
     }
 
@@ -89,23 +111,33 @@ final class FirmwareRecovery {
         return Wire.command(0xaf, data.array());
     }
 
-    boolean receive(byte[] payload) {
-        if (!active() || payload.length != 7) return false;
+    String receive(long now, byte[] payload) {
+        if (!active()) return null;
+        if (payload.length != 7) {
+            lastRxSummary = "len=" + payload.length;
+            return "Risposta bootloader anomala · len=" + payload.length;
+        }
         ByteBuffer data = Wire.read(payload);
-        data.getInt(); // Byte count can include the zero padding of the last block.
+        long bytes = Integer.toUnsignedLong(data.getInt()); // Byte count can include the zero padding of the last block.
         int index = data.getShort() & 65535;
         int status = data.get() & 255;
+        lastRxSummary = "bytes=" + bytes + " idx=" + index + " st=" + status;
         if (status == 10 && committing) {
             outcome = "Firmware ricevuto · bootloader ha confermato il completamento";
+            return outcome;
         } else if (status != 0) {
-            outcome = "Bootloader ha rifiutato il blocco " + index + " · codice " + status;
+            outcome = "Bootloader ha rifiutato il blocco " + index + " · codice " + status + " (bytes=" + bytes + ")";
+            return outcome;
         } else if (index < nextChunk && index >= confirmed) {
             confirmed = index;
+            lastConfirmedAt = now;
+        } else {
+            return "0xef fuori sequenza: " + lastRxSummary + " next=" + nextChunk + " conf=" + confirmed;
         }
-        if (outcome != null || (confirmed >= 0 && confirmed / 32 != lastReported)) {
+        if (confirmed >= 0 && (confirmed / 32 != lastReported || confirmed >= 254)) {
             lastReported = confirmed / 32;
-            return true;
+            return "Blocchi confermati: " + confirmed() + " (" + lastRxSummary + ")";
         }
-        return false;
+        return null;
     }
 }

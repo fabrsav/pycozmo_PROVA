@@ -147,6 +147,12 @@ public final class Wire {
         return command(0x0b, new byte[]{(byte) (enable ? 1 : 0)});
     }
 
+    public static Packet setCameraParams(float gain, int exposureMs, boolean autoExposure) {
+        float g = Safety.limit(Float.isFinite(gain) ? gain : 0f, 0f, 8f);
+        int exp = Math.max(0, Math.min(65535, exposureMs));
+        return command(0x57, le(7).putFloat(g).putShort((short) exp).put((byte) (autoExposure ? 1 : 0)).array());
+    }
+
     public static Packet accessoryDiscovery(boolean enable) {
         return command(0x0a, new byte[]{(byte) (enable ? 1 : 0)});
     }

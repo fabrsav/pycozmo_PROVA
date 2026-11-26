@@ -252,7 +252,8 @@ public final class Personality {
             float famBoost = 1.0f + recognizedFamiliarity * 0.35f;
             emotions.social = EmotionGraph.clamp(emotions.social + dtSec * 0.18f * profile.socialGain * famBoost);
             emotions.happy = EmotionGraph.clamp(emotions.happy + dtSec * 0.12f * profile.socialGain * famBoost);
-            needs.play = NeedsModel.clamp(needs.play + dtSec * 0.008f);
+            needs.play = NeedsModel.clamp(needs.play + dtSec * 0.018f);
+            needs.comfort = NeedsModel.clamp(needs.comfort + dtSec * 0.015f);
             recentStimulus = "face_seen";
         }
         if (cubeActive) {
@@ -269,9 +270,9 @@ public final class Personality {
             Expression prev = currentExpression;
             if (unsafe) currentExpression = Expression.SURPRISED;
             else if (needs.energy < 0.25f) currentExpression = Expression.SLEEPY;
-            else if (needs.comfort < 0.25f) currentExpression = Expression.SAD;
             else if (emotions.excited > 0.45f && needs.bracketOf(needs.energy) != NeedsModel.Bracket.CRITICAL) currentExpression = Expression.EXCITED;
             else if (emotions.happy > 0.35f || faceSeen) currentExpression = Expression.HAPPY;
+            else if (needs.comfort < 0.25f) currentExpression = Expression.SAD;
             else if (profile == Profile.BIRICHINO && needs.play < 0.55f && emotions.curious > 0.32f) currentExpression = Expression.SKEPTICAL;
             else if (needs.play < 0.35f || emotions.curious > 0.38f) currentExpression = Expression.CURIOUS;
             else currentExpression = Expression.NEUTRAL;

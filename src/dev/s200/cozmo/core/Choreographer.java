@@ -48,6 +48,8 @@ public final class Choreographer {
     private long activeStartMs = 0;
     private long lastEvaluatedOffsetMs = -1;
     private String pendingStartedId = null;
+    private boolean activeMuteAudio = false;
+    private boolean activeMuteFace = false;
     private long lastAutonomousAudioMs = -100_000L;
 
     public Choreographer() {
@@ -64,8 +66,8 @@ public final class Choreographer {
             Collections.singletonList(new AnimClip.AudioCue(120L, "happy", "ciao!")),
             Arrays.asList(new AnimClip.LedKeyframe(0L, "cyan", false), new AnimClip.LedKeyframe(400L, "green", true)),
             Arrays.asList(
-                new AnimClip.MotorGesture(100L, 0.08f, 6f, 0f, 0f, 0L),
-                new AnimClip.MotorGesture(900L, -0.04f, -6f, 0f, 0f, 0L)
+                new AnimClip.MotorGesture(100L, 0.16f, 14f, 0f, 0f, 0L),
+                new AnimClip.MotorGesture(950L, -0.10f, -14f, 0f, 0f, 0L)
             )
         ));
 
@@ -76,7 +78,10 @@ public final class Choreographer {
             ),
             Collections.singletonList(new AnimClip.AudioCue(150L, "curious", "chi sei?")),
             Collections.singletonList(new AnimClip.LedKeyframe(0L, "cyan", false)),
-            Collections.singletonList(new AnimClip.MotorGesture(150L, 0.06f, 0f, 0f, 0f, 0L))
+            Arrays.asList(
+                new AnimClip.MotorGesture(150L, 0.14f, 10f, 0f, 0f, 0L),
+                new AnimClip.MotorGesture(1050L, -0.08f, -10f, 0f, 0f, 0L)
+            )
         ));
 
         register(new AnimClip("SURPRISED_PICKUP", AnimClip.Priority.SAFETY_REFLEX, 1800L,
@@ -106,7 +111,10 @@ public final class Choreographer {
             ),
             Collections.singletonList(new AnimClip.AudioCue(80L, "happy", "")),
             Collections.singletonList(new AnimClip.LedKeyframe(0L, "green", false)),
-            Collections.singletonList(new AnimClip.MotorGesture(120L, 0.05f, 0f, 0f, 0f, 0L))
+            Arrays.asList(
+                new AnimClip.MotorGesture(120L, 0.13f, 8f, 0f, 0f, 0L),
+                new AnimClip.MotorGesture(1000L, -0.08f, -8f, 0f, 0f, 0L)
+            )
         ));
 
         register(new AnimClip("PLAY_CHEER", AnimClip.Priority.USER_DIRECT, 2200L,
@@ -118,8 +126,8 @@ public final class Choreographer {
             Collections.singletonList(new AnimClip.AudioCue(60L, "excited", "evviva!")),
             Collections.singletonList(new AnimClip.LedKeyframe(0L, "purple", true)),
             Arrays.asList(
-                new AnimClip.MotorGesture(80L, 0.09f, 8f, 22f, -22f, 180L),
-                new AnimClip.MotorGesture(750L, -0.05f, -8f, -22f, 22f, 180L)
+                new AnimClip.MotorGesture(80L, 0.16f, 15f, 28f, -28f, 180L),
+                new AnimClip.MotorGesture(850L, -0.12f, -15f, -28f, 28f, 180L)
             )
         ));
 
@@ -130,7 +138,7 @@ public final class Choreographer {
             ),
             Collections.singletonList(new AnimClip.AudioCue(180L, "sigh", "")),
             Collections.singletonList(new AnimClip.LedKeyframe(0L, "amber", false)),
-            Collections.singletonList(new AnimClip.MotorGesture(200L, -0.06f, 0f, 0f, 0f, 0L))
+            Collections.singletonList(new AnimClip.MotorGesture(200L, -0.12f, -6f, 0f, 0f, 0L))
         ));
 
         register(new AnimClip("SLEEPY_CHARGER", AnimClip.Priority.IDLE_AUTONOMOUS, 2800L,
@@ -152,8 +160,8 @@ public final class Choreographer {
             Collections.singletonList(new AnimClip.AudioCue(120L, "curious", "")),
             Collections.singletonList(new AnimClip.LedKeyframe(0L, "cyan", false)),
             Arrays.asList(
-                new AnimClip.MotorGesture(120L, 0.07f, 0f, 18f, 18f, 160L),
-                new AnimClip.MotorGesture(950L, -0.04f, 0f, 0f, 0f, 0L)
+                new AnimClip.MotorGesture(120L, 0.14f, 10f, 20f, 20f, 160L),
+                new AnimClip.MotorGesture(950L, -0.12f, -10f, 0f, 0f, 0L)
             )
         ));
 
@@ -165,8 +173,8 @@ public final class Choreographer {
             Collections.singletonList(new AnimClip.AudioCue(40L, "fanfare", "")),
             Arrays.asList(new AnimClip.LedKeyframe(0L, "green", true), new AnimClip.LedKeyframe(800L, "purple", true)),
             Arrays.asList(
-                new AnimClip.MotorGesture(60L, 0.10f, 10f, 0f, 0f, 0L),
-                new AnimClip.MotorGesture(800L, -0.06f, -10f, 0f, 0f, 0L)
+                new AnimClip.MotorGesture(60L, 0.17f, 15f, 0f, 0f, 0L),
+                new AnimClip.MotorGesture(850L, -0.11f, -15f, 0f, 0f, 0L)
             )
         ));
     }
@@ -192,17 +200,29 @@ public final class Choreographer {
         activeClip = null;
         pendingStartedId = null;
         lastEvaluatedOffsetMs = -1;
+        activeMuteAudio = false;
+        activeMuteFace = false;
     }
 
     public synchronized boolean startClip(String clipId, long nowMs) {
-        return startClip(getClip(clipId), null, nowMs);
+        return startClip(getClip(clipId), null, nowMs, false, false);
     }
 
     public synchronized boolean startClip(String clipId, AnimClip.Priority overridePriority, long nowMs) {
-        return startClip(getClip(clipId), overridePriority, nowMs);
+        return startClip(getClip(clipId), overridePriority, nowMs, false, false);
+    }
+
+    public synchronized boolean startClip(String clipId, AnimClip.Priority overridePriority, long nowMs,
+                                          boolean muteAudio, boolean muteFace) {
+        return startClip(getClip(clipId), overridePriority, nowMs, muteAudio, muteFace);
     }
 
     public synchronized boolean startClip(AnimClip clip, AnimClip.Priority overridePriority, long nowMs) {
+        return startClip(clip, overridePriority, nowMs, false, false);
+    }
+
+    public synchronized boolean startClip(AnimClip clip, AnimClip.Priority overridePriority, long nowMs,
+                                          boolean muteAudio, boolean muteFace) {
         if (clip == null) return false;
         AnimClip.Priority incomingPrio = overridePriority != null ? overridePriority : clip.priority;
         if (activeClip != null && nowMs - activeStartMs < activeClip.durationMs) {
@@ -216,6 +236,8 @@ public final class Choreographer {
         activeStartMs = nowMs;
         lastEvaluatedOffsetMs = -1;
         pendingStartedId = activeClip.id;
+        activeMuteAudio = muteAudio;
+        activeMuteFace = muteFace;
         return true;
     }
 
@@ -229,9 +251,11 @@ public final class Choreographer {
         pendingStartedId = null;
 
         AnimClip.FaceKeyframe face = null;
-        for (AnimClip.FaceKeyframe fk : activeClip.faceTrack) {
-            if (fk.offsetMs > lastEvaluatedOffsetMs && fk.offsetMs <= elapsed) {
-                face = fk;
+        if (!activeMuteFace) {
+            for (AnimClip.FaceKeyframe fk : activeClip.faceTrack) {
+                if (fk.offsetMs > lastEvaluatedOffsetMs && fk.offsetMs <= elapsed) {
+                    face = fk;
+                }
             }
         }
 
@@ -252,27 +276,29 @@ public final class Choreographer {
         List<byte[]> audioFrames = null;
         boolean skippedBackpressure = false;
         boolean skippedCooldown = false;
-        for (AnimClip.AudioCue ac : activeClip.audioTrack) {
-            if (ac.offsetMs > lastEvaluatedOffsetMs && ac.offsetMs <= elapsed) {
-                if (!allowAudio) {
-                    break;
-                }
-                if (queuedAudioFrames > AUDIO_BACKPRESSURE_GUARD_FRAMES) {
-                    skippedBackpressure = true;
-                    break;
-                }
-                boolean isAutonomous = activeClip.priority.level <= AnimClip.Priority.SOCIAL_REACTION.level;
-                if (isAutonomous && (nowMs - lastAutonomousAudioMs) < AUTONOMOUS_AUDIO_COOLDOWN_MS) {
-                    skippedCooldown = true;
-                    break;
-                }
-                AudioSynth.VoiceProfile vp = AudioSynth.VoiceProfile.fromProfile(profile);
-                Personality.Expression expr = face != null ? face.expression : Personality.Expression.NEUTRAL;
-                audioFrames = (ac.sayText != null && !ac.sayText.isEmpty())
-                    ? AudioSynth.speakText(ac.sayText, vp, expr)
-                    : AudioSynth.preset(ac.preset, vp);
-                if (isAutonomous) {
-                    lastAutonomousAudioMs = nowMs;
+        if (!activeMuteAudio) {
+            for (AnimClip.AudioCue ac : activeClip.audioTrack) {
+                if (ac.offsetMs > lastEvaluatedOffsetMs && ac.offsetMs <= elapsed) {
+                    if (!allowAudio) {
+                        break;
+                    }
+                    if (queuedAudioFrames > AUDIO_BACKPRESSURE_GUARD_FRAMES) {
+                        skippedBackpressure = true;
+                        break;
+                    }
+                    boolean isAutonomous = activeClip.priority.level <= AnimClip.Priority.SOCIAL_REACTION.level;
+                    if (isAutonomous && (nowMs - lastAutonomousAudioMs) < AUTONOMOUS_AUDIO_COOLDOWN_MS) {
+                        skippedCooldown = true;
+                        break;
+                    }
+                    AudioSynth.VoiceProfile vp = AudioSynth.VoiceProfile.fromProfile(profile);
+                    Personality.Expression expr = face != null ? face.expression : Personality.Expression.NEUTRAL;
+                    audioFrames = (ac.sayText != null && !ac.sayText.isEmpty())
+                        ? AudioSynth.speakText(ac.sayText, vp, expr)
+                        : AudioSynth.preset(ac.preset, vp);
+                    if (isAutonomous) {
+                        lastAutonomousAudioMs = nowMs;
+                    }
                 }
             }
         }
@@ -284,6 +310,8 @@ public final class Choreographer {
             endedId = activeClip.id;
             activeClip = null;
             lastEvaluatedOffsetMs = -1;
+            activeMuteAudio = false;
+            activeMuteFace = false;
         }
         return new ChoreographyStep(activeId, started, endedId, face, audioFrames,
             skippedBackpressure, skippedCooldown, led, motor);

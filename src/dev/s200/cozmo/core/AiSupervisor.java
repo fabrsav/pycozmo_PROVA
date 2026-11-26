@@ -15,6 +15,7 @@ import java.util.Set;
  */
 public final class AiSupervisor {
     public static final float MAX_HEAD_DELTA_RAD = 0.18f; // ~10.3 deg
+    public static final float MAX_LIFT_DELTA_MM = 15.0f;
     public static final long MIN_TTL_MS = 800L;
     public static final long MAX_TTL_MS = 5000L;
 
@@ -75,15 +76,15 @@ public final class AiSupervisor {
 
         public String toCompactJson() {
             StringBuilder ev = new StringBuilder("[");
-            int limit = Math.min(3, recentEvents.size());
+            int limit = Math.min(6, recentEvents.size());
             for (int i = 0; i < limit; i++) {
                 if (i > 0) ev.append(',');
                 String item = recentEvents.get(i);
-                if (item != null && item.length() > 60) item = item.substring(0, 60);
+                if (item != null && item.length() > 70) item = item.substring(0, 70);
                 ev.append('"').append(escape(item)).append('"');
             }
             ev.append(']');
-            String promptTrim = userPrompt.length() > 140 ? userPrompt.substring(0, 140) : userPrompt;
+            String promptTrim = userPrompt.length() > 160 ? userPrompt.substring(0, 160) : userPrompt;
             String json = String.format(Locale.ROOT,
                 "{\"profile\":\"%s\",\"needs\":{\"energy\":\"%s\",\"play\":\"%s\",\"comfort\":\"%s\"}," +
                 "\"emotion\":\"%s\",\"person\":\"%s\",\"familiarity\":%.2f,\"events\":%s," +
@@ -93,7 +94,7 @@ public final class AiSupervisor {
                 escape(dominantEmotion), escape(personName), familiarity, ev.toString(),
                 onCharger, unsafe, armed, darkScene, facesCount, allowAutonomousDrive,
                 escape(promptTrim));
-            return json.length() <= 1000 ? json : json.substring(0, 1000);
+            return json.length() <= 1500 ? json : json.substring(0, 1500);
         }
 
         private static String escape(String s) {
@@ -109,6 +110,7 @@ public final class AiSupervisor {
         public final String sayText;
         public final String backpackColor;
         public final float headDeltaRad;
+        public final float liftDeltaMm;
         public final float driveLeft;
         public final float driveRight;
         public final long driveDurationMs;
@@ -120,12 +122,21 @@ public final class AiSupervisor {
         public Intention(Personality.Expression expression, String vocalization, String sayText,
                          String backpackColor, float headDeltaRad, long createdAtMs, long ttlMs,
                          String reason, String source) {
-            this(null, expression, vocalization, sayText, backpackColor, headDeltaRad,
+            this(null, expression, vocalization, sayText, backpackColor, headDeltaRad, 0f,
                 0f, 0f, 0L, createdAtMs, ttlMs, reason, source);
         }
 
         public Intention(String clipId, Personality.Expression expression, String vocalization, String sayText,
                          String backpackColor, float headDeltaRad, float driveLeft, float driveRight,
+                         long driveDurationMs, long createdAtMs, long ttlMs,
+                         String reason, String source) {
+            this(clipId, expression, vocalization, sayText, backpackColor, headDeltaRad, 0f,
+                driveLeft, driveRight, driveDurationMs, createdAtMs, ttlMs, reason, source);
+        }
+
+        public Intention(String clipId, Personality.Expression expression, String vocalization, String sayText,
+                         String backpackColor, float headDeltaRad, float liftDeltaMm,
+                         float driveLeft, float driveRight,
                          long driveDurationMs, long createdAtMs, long ttlMs,
                          String reason, String source) {
             this.clipId = sanitizeClip(clipId);
@@ -134,6 +145,7 @@ public final class AiSupervisor {
             this.sayText = sanitizeSay(sayText);
             this.backpackColor = sanitizeColor(backpackColor);
             this.headDeltaRad = Safety.limit(Float.isFinite(headDeltaRad) ? headDeltaRad : 0f, -MAX_HEAD_DELTA_RAD, MAX_HEAD_DELTA_RAD);
+            this.liftDeltaMm = Safety.limit(Float.isFinite(liftDeltaMm) ? liftDeltaMm : 0f, -MAX_LIFT_DELTA_MM, MAX_LIFT_DELTA_MM);
             this.driveLeft = Safety.limit(Float.isFinite(driveLeft) ? driveLeft : 0f, -40f, 40f);
             this.driveRight = Safety.limit(Float.isFinite(driveRight) ? driveRight : 0f, -40f, 40f);
             this.driveDurationMs = Math.max(0L, Math.min(1500L, driveDurationMs));
@@ -151,11 +163,14 @@ public final class AiSupervisor {
         public String summary(long nowMs) {
             long rem = Math.max(0L, expiresAtMs - nowMs);
             String clipPart = clipId != null && !clipId.isEmpty() ? " · clip=" + clipId : "";
+            String liftPart = Math.abs(liftDeltaMm) >= 1f
+                ? String.format(Locale.ITALY, " · dCarrello=%+.0f mm", liftDeltaMm)
+                : "";
             return String.format(Locale.ITALY,
-                "[%s] %s%s · voce=%s%s · zaino=%s · dTesta=%+.1f° · scade=%d ms\nMotivo: %s",
+                "[%s] %s%s · voce=%s%s · zaino=%s · dTesta=%+.1f°%s · scade=%d ms\nMotivo: %s",
                 source, expression.label, clipPart, vocalization,
                 sayText.isEmpty() ? "" : " (\"" + sayText + "\")",
-                backpackColor, Math.toDegrees(headDeltaRad), rem, reason);
+                backpackColor, Math.toDegrees(headDeltaRad), liftPart, rem, reason);
         }
     }
 
@@ -196,11 +211,12 @@ public final class AiSupervisor {
         String colorStr = extractString(json, "backpack", "cyan");
         String reasonStr = extractString(json, "reason", "Risposta modello validata dal supervisore");
         float headDeg = extractFloat(json, "head_delta_deg", 0f);
+        float liftMm = Safety.limit(extractFloat(json, "lift_delta_mm", 0f), -MAX_LIFT_DELTA_MM, MAX_LIFT_DELTA_MM);
         long ttlMs = (long) extractFloat(json, "expires_ms", 3000f);
 
         float headRad = (float) Math.toRadians(Safety.limit(headDeg, -10.0f, 10.0f));
         Personality.Expression expr = Personality.Expression.fromName(exprStr);
-        return new Intention(clipStr, expr, vocalStr, sayStr, colorStr, headRad,
+        return new Intention(clipStr, expr, vocalStr, sayStr, colorStr, headRad, liftMm,
             allowAutonomousDrive ? vl : 0f,
             allowAutonomousDrive ? vr : 0f,
             allowAutonomousDrive ? driveDurMs : 0L,

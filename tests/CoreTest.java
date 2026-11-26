@@ -372,6 +372,51 @@ public final class CoreTest {
         check(!cleanLog.contains(dummySecret) && cleanLog.contains("[REDACTED]"),
             "AiSupervisor.sanitizeForLog strips API keys from URLs and messages");
 
+        // 0.5.3 regression checks: Choreographer mute flags, lift_delta_mm clamp, Personality SAD escape on faceSeen, BehaviorScheduler variety
+        Choreographer mutedChoreo = new Choreographer();
+        check(mutedChoreo.startClip("GREET_FAMILIAR", AnimClip.Priority.AI_ACTION, 1000L, true, true),
+            "Starts clip with muteAudio and muteFace");
+        Choreographer.ChoreographyStep mutedStep0 = mutedChoreo.tick(1000L, Personality.Profile.CURIOSO, 0, true);
+        Choreographer.ChoreographyStep mutedStep120 = mutedChoreo.tick(1150L, Personality.Profile.CURIOSO, 0, true);
+        check(mutedStep0.faceIntent == null && mutedStep120.audioFrames == null
+            && "cyan".equals(mutedStep0.backpackColor) && mutedStep120.motorIntent != null,
+            "Choreographer muteAudio/muteFace suppresses face & audio while keeping LED & motor gestures");
+
+        AiSupervisor.Intention liftInt = AiSupervisor.validateJson(
+            "{\"expression\":\"EXCITED\",\"vocalization\":\"excited\",\"say\":\"evviva!\",\"backpack\":\"purple\",\"head_delta_deg\":12.0,\"lift_delta_mm\":42.0,\"expires_ms\":4000,\"reason\":\"lift\"}",
+            5000L, "test-lift");
+        check(liftInt != null && Math.abs(liftInt.liftDeltaMm - 15.0f) < 0.01f
+            && Math.abs(liftInt.headDeltaRad - (float) Math.toRadians(10.0)) < 0.001f,
+            "AiSupervisor parses and clamps lift_delta_mm to [-15, 15]");
+
+        Personality sadEscape = new Personality();
+        sadEscape.comfort = 0.05f;
+        sadEscape.play = 0.05f;
+        sadEscape.energy = 0.90f;
+        Wire.Telemetry chgTel = new Wire.Telemetry();
+        chgTel.status = 0x1000;
+        chgTel.battery = 4.5f;
+        sadEscape.update(1000L, chgTel, false, false);
+        sadEscape.update(4000L, chgTel, true, false);
+        check(sadEscape.comfort > 0.05f && sadEscape.expression(4000L) == Personality.Expression.HAPPY,
+            "Personality faceSeen raises comfort and prefers HAPPY over SAD trap");
+
+        BehaviorScheduler rotSched = new BehaviorScheduler();
+        pers.setProfile(Personality.Profile.CURIOSO);
+        pers.comfort = 0.80f;
+        pers.play = 0.80f;
+        pers.energy = 0.90f;
+        Personality.PersonalitySnapshot rotSnap = pers.snapshot(0L);
+        Set<String> seenIdleClips = new HashSet<>();
+        for (long simMs = 25_000L; simMs <= 200_000L; simMs += 25_000L) {
+            BehaviorScheduler.WorldState rws = new BehaviorScheduler.WorldState(
+                rotSnap, true, false, false, false, 0.18f, 4.5f, true, true, null, false,
+                true, true, true, false);
+            BehaviorScheduler.BehaviorDecision rdec = rotSched.evaluate(rws, simMs);
+            if (rdec != null && rdec.clipId != null) seenIdleClips.add(rdec.clipId);
+        }
+        check(seenIdleClips.size() >= 2, "BehaviorScheduler rotates idle clips across multiple clip IDs");
+
         System.out.println("PASS "+checks+" core checks against PyCozmo, audio, personality, cubes, vision, and AI safety");
     }
 }

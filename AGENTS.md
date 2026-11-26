@@ -1,6 +1,7 @@
 # Cozmo S200
 
 - Il target fisico verificato è DOOGEE S200, Android 16/API 36/arm64, ADB Tailscale `100.94.42.57:5555`. Verificarlo sempre prima di modifiche. Non usare ReDroid come destinazione.
+- **Controllo 100% headless via ADB**: per avviare e pilotare Cozmo non aprire la GUI sul telefono né usare `device_click.py` / `tests/device` (che restano solo per eventuali test grafici espliciti). Inviare i comandi direttamente a `dev.s200.cozmo/.RobotService` tramite `adb -s 100.94.42.57:5555 shell am start-foreground-service -n dev.s200.cozmo/.RobotService -a <ACTION>` (es. `-a CONNECT`, `-a STOP`, `-a DISCONNECT`, `-a ARM`, `-a HEAD`, `-a LIFT`, `-a DRIVE`, `-a SAY`, `-a CAMERA`, `-a SNAPSHOT`; vedi skill globale `cozmo-s200-adb`) e verificare stato/telemetria in `files/state.json` e `files/events.ndjson` via `run-as dev.s200.cozmo`.
 - Questo progetto usa il protocollo reale di PyCozmo, commit fissato in THIRD_PARTY.md. Il progetto precedente `cozmo-embodied-os` contiene un framing simulato e non è un driver reale.
 - Build nativa ARM: `bash build.sh`. Usa aapt2 Debian con android-34.jar; il wrapper `~/bin/aapt2` punta a un binario temporaneo mancante. Aapt2 Debian non legge le risorse compresse di android-35.jar.
 - Il limite 1051 byte vale per i frame inviati al robot, non per i datagrammi della camera ricevuti. Il test large-image lo protegge.

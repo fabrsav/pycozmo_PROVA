@@ -18,7 +18,7 @@ import android.widget.TextView;
 public final class CompanionTab {
     private final Context c;
     private final UiCallbacks cb;
-    private final LinearLayout root;
+    private final ScrollView root;
 
     private final ImageView faceView;
     private final TextView behaviorPill;
@@ -256,7 +256,7 @@ public final class CompanionTab {
         card6.addView(noteWheels);
         container.addView(card6);
 
-        this.root = container;
+        this.root = scroll;
     }
 
     public View getView() {

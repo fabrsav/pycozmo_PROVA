@@ -37,6 +37,7 @@ public final class RobotService extends Service implements Link.Observer {
     public volatile String lastAiSummary = "Supervisore AI locale pronto";
     public volatile String activeBehavior = "nessuno";
     public volatile String lastBehaviorReason = "In attesa";
+    public volatile String lastPerception = "";
     public MemoryDb memoryDb;
 
     private ConnectivityManager cm;
@@ -45,6 +46,7 @@ public final class RobotService extends Service implements Link.Observer {
     private PowerManager.WakeLock wake;
     private PrintWriter log;
     private CameraFrames camera;
+    private CozmoTts cozmoTts;
     private volatile long generation = 0;
 
     private boolean life = false;
@@ -56,13 +58,27 @@ public final class RobotService extends Service implements Link.Observer {
     private boolean autonomousWheels = false;
     private GeminiLiveClient.AiTurnPolicy aiPolicy = GeminiLiveClient.AiTurnPolicy.ON_DEMAND;
     private String aiModel = GeminiLiveClient.DEFAULT_MODEL;
+    private volatile String lastInteractionId = null;
 
     private long lifeStart = 0;
     private String lastAutoBackpack = "";
     private byte[] lastSentDisplayRle = null;
     private long lastDisplaySentMs = 0;
     private long lastFaceSeenMs = 0, lastPersonalityTickMs = 0, lastStateJsonMs = 0, lastNeedsPersistMs = 0;
-    private long lastLiveTickMs = 0, liveBackoffMs = 45_000L, lastOnDemandTriggerMs = 0;
+    private long lastLiveTickMs = 0, liveBackoffMs = 60_000L, lastOnDemandTriggerMs = 0;
+    private long lastSceneTriggerMs = 0, lastHeadTrackMs = 0;
+    private float lastAmbientLuma = -1f;
+    private boolean lastButtonPressed = false;
+    private volatile long directAudioLockUntilMs = 0L;
+    private volatile long lastLocalReflexMs = 0L;
+    private volatile long ignoreVisionMotionUntilMs = 0L;
+    private volatile long aiHoldUntilMs = 0L;
+    private volatile float prevTelemetryHead = Float.NaN, prevTelemetryLift = Float.NaN;
+    private volatile int darkFrameStreak = 0;
+    private volatile boolean autoHeadlightOn = false;
+    private volatile boolean lowLightExposureActive = false;
+    private volatile boolean manualHeadlightOverride = false;
+    private volatile String lastAiReactionTag = "";
     private final AtomicBoolean aiTurnInFlight = new AtomicBoolean(false);
 
     private final ExecutorService aiExecutor = Executors.newSingleThreadExecutor(r -> new Thread(r, "cozmo-live-ai"));
@@ -80,6 +96,17 @@ public final class RobotService extends Service implements Link.Observer {
             }
 
             if (linkAlive) {
+                boolean btn = t != null && t.buttonPressed();
+                if (btn && !lastButtonPressed) {
+                    event("input", "Pulsante dorsale di Cozmo premuto");
+                    if (hasGeminiKey() && aiPolicy != GeminiLiveClient.AiTurnPolicy.OFFLINE_ONLY) {
+                        runGeminiLiveTurn("Qualcuno ha premuto il pulsante sullo zaino di Cozmo: guarda davanti a te e reagisci!", true);
+                    } else {
+                        careInteraction("play");
+                    }
+                }
+                lastButtonPressed = btn;
+
                 if (now - lastPersonalityTickMs >= 200) {
                     lastPersonalityTickMs = now;
                     boolean faceRecent = lastFaceSeenMs > 0 && (now - lastFaceSeenMs) < 2500;
@@ -90,6 +117,8 @@ public final class RobotService extends Service implements Link.Observer {
                     }
 
                     Personality.PersonalitySnapshot snap = personality.snapshot(now);
+                    VisionAnalyzer.Result schedVision = (now < ignoreVisionMotionUntilMs) ? null : visionResult;
+                    boolean schedAutonomous = autonomous && (now >= aiHoldUntilMs) && !aiTurnInFlight.get();
                     BehaviorScheduler.WorldState ws = new BehaviorScheduler.WorldState(
                         snap,
                         t != null && t.onCharger(),
@@ -100,9 +129,9 @@ public final class RobotService extends Service implements Link.Observer {
                         t != null ? t.battery : 0f,
                         l.armed(),
                         cameraActive,
-                        visionResult,
+                        schedVision,
                         cubeAct,
-                        autonomous,
+                        schedAutonomous,
                         autonomousVoice,
                         autonomousMotion,
                         autonomousWheels
@@ -116,6 +145,7 @@ public final class RobotService extends Service implements Link.Observer {
                         }
                         if (dec.hasHeadTarget && dec.allowMotion && l.armed() && t != null && !t.unsafe()) {
                             l.head(dec.headTargetRad);
+                            markRobotMoving(1300L);
                         }
                         if (dec.clipId != null) {
                             choreographer.startClip(dec.clipId, dec.priority, now);
@@ -124,9 +154,16 @@ public final class RobotService extends Service implements Link.Observer {
                     }
                 }
 
+                if (autonomous && autonomousMotion && l.armed() && t != null && !t.unsafe()
+                        && l.armRemainingMs() < 20_000L) {
+                    l.keepAliveArm();
+                }
+
                 // Tick multi-modal choreographer
-                boolean allowClipAudio = autonomousVoice ||
-                    (choreographer.activeClip() != null && choreographer.activeClip().priority.level >= AnimClip.Priority.USER_DIRECT.level);
+                boolean allowClipAudio = (autonomousVoice ||
+                    (choreographer.activeClip() != null && choreographer.activeClip().priority.level >= AnimClip.Priority.USER_DIRECT.level))
+                    && now >= directAudioLockUntilMs
+                    && l.getQueuedAudioFrames() == 0;
                 Choreographer.ChoreographyStep step = choreographer.tick(
                     now, personality.profile(), l.getQueuedAudioFrames(), allowClipAudio);
 
@@ -140,7 +177,7 @@ public final class RobotService extends Service implements Link.Observer {
                 if (step.backpackColor != null && !step.backpackColor.equals(lastAutoBackpack)) {
                     lastAutoBackpack = step.backpackColor;
                     l.setBackpackColor(step.backpackColor);
-                } else if (autonomous && step.activeClipId == null) {
+                } else if (autonomous && step.activeClipId == null && (lastIntention == null || lastIntention.expired(now))) {
                     String bp = personality.recommendedBackpack();
                     if (!bp.equals(lastAutoBackpack)) {
                         lastAutoBackpack = bp;
@@ -197,6 +234,13 @@ public final class RobotService extends Service implements Link.Observer {
         }
     };
 
+    private void markRobotMoving(long holdMs) {
+        long until = Link.now() + holdMs;
+        if (until > ignoreVisionMotionUntilMs) {
+            ignoreVisionMotionUntilMs = until;
+        }
+    }
+
     private void applySafeMotorGesture(Link l, Wire.Telemetry t, AnimClip.MotorGesture mg, boolean userDirect) {
         if (l == null || mg == null || !l.armed() || t == null || t.unsafe()) return;
         boolean allowJoints = userDirect || autonomousMotion;
@@ -204,13 +248,16 @@ public final class RobotService extends Service implements Link.Observer {
         if (allowJoints) {
             if (Math.abs(mg.headDeltaRad) > 0.005f) {
                 l.head(t.head + mg.headDeltaRad);
+                markRobotMoving(1300L);
             }
             if (Math.abs(mg.liftDeltaMm) > 0.5f) {
                 l.lift(t.lift + mg.liftDeltaMm);
+                markRobotMoving(1300L);
             }
         }
         if (allowWheels && mg.wheelDurationMs > 0L && (Math.abs(mg.wheelLeft) > 0.5f || Math.abs(mg.wheelRight) > 0.5f)) {
             l.drive(mg.wheelLeft, mg.wheelRight);
+            markRobotMoving(1300L);
         }
     }
 
@@ -243,9 +290,14 @@ public final class RobotService extends Service implements Link.Observer {
         autonomousMotion = prefs.getBoolean("autonomous_motion", false);
         autonomousWheels = prefs.getBoolean("autonomous_wheels", false) && autonomousMotion;
         aiPolicy = GeminiLiveClient.AiTurnPolicy.fromName(prefs.getString("ai_turn_policy", "ON_DEMAND"));
-        aiModel = prefs.getString("ai_model", GeminiLiveClient.DEFAULT_MODEL);
+        String storedModel = prefs.getString("ai_model", GeminiLiveClient.DEFAULT_MODEL);
+        aiModel = GeminiLiveClient.normalizeModel(storedModel);
+        if (!aiModel.equals(storedModel)) {
+            prefs.edit().putString("ai_model", aiModel).apply();
+        }
 
         camera = new CameraFrames(this);
+        cozmoTts = new CozmoTts(this);
         PowerManager pm = getSystemService(PowerManager.class);
         wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "CozmoS200:link");
         getSystemService(NotificationManager.class).createNotificationChannel(
@@ -320,19 +372,32 @@ public final class RobotService extends Service implements Link.Observer {
                 else event("rejected", "Collegamento non attivo");
                 break;
             case "DRIVE":
-                if (link != null) link.drive(i.getFloatExtra("left", 0f), i.getFloatExtra("right", 0f));
+                if (link != null) {
+                    link.drive(i.getFloatExtra("left", 0f), i.getFloatExtra("right", 0f));
+                    markRobotMoving(1300L);
+                }
                 break;
             case "HEAD": {
                 if (link != null) {
-                    if (i.hasExtra("angle")) link.head(i.getFloatExtra("angle", 0.18f));
-                    else if (i.hasExtra("delta") && telemetry != null) link.head(telemetry.head + i.getFloatExtra("delta", 0f));
+                    if (i.hasExtra("angle")) {
+                        link.head(i.getFloatExtra("angle", 0.18f));
+                        markRobotMoving(1300L);
+                    } else if (i.hasExtra("delta") && telemetry != null) {
+                        link.head(telemetry.head + i.getFloatExtra("delta", 0f));
+                        markRobotMoving(1300L);
+                    }
                 }
                 break;
             }
             case "LIFT": {
                 if (link != null) {
-                    if (i.hasExtra("height")) link.lift(i.getFloatExtra("height", 32f));
-                    else if (i.hasExtra("delta") && telemetry != null) link.lift(telemetry.lift + i.getFloatExtra("delta", 0f));
+                    if (i.hasExtra("height")) {
+                        link.lift(i.getFloatExtra("height", 32f));
+                        markRobotMoving(1300L);
+                    } else if (i.hasExtra("delta") && telemetry != null) {
+                        link.lift(telemetry.lift + i.getFloatExtra("delta", 0f));
+                        markRobotMoving(1300L);
+                    }
                 }
                 break;
             }
@@ -383,9 +448,23 @@ public final class RobotService extends Service implements Link.Observer {
                 }
                 break;
             }
-            case "HEADLIGHT":
-                if (link != null) link.setHeadLight(i.getBooleanExtra("enabled", true));
+            case "HEADLIGHT": {
+                boolean en = i.getBooleanExtra("enabled", true);
+                manualHeadlightOverride = true;
+                autoHeadlightOn = en;
+                if (link != null) link.setHeadLight(en);
+                writeStateJson();
                 break;
+            }
+            case "CAMERA_EXPOSURE": {
+                boolean auto = i.getBooleanExtra("auto", false);
+                float gain = i.getFloatExtra("gain", auto ? 0f : 3.5f);
+                int expMs = i.getIntExtra("exposure_ms", auto ? 0 : 65);
+                lowLightExposureActive = !auto;
+                if (link != null) link.setCameraParams(gain, expMs, auto);
+                writeStateJson();
+                break;
+            }
             case "DIAG_NO_DISPLAY":
                 diagNoDisplay = i.getBooleanExtra("enabled", true);
                 event("diag", "Display continuo " + (diagNoDisplay ? "disattivato" : "attivato"));
@@ -456,6 +535,14 @@ public final class RobotService extends Service implements Link.Observer {
             case "AI_PROMPT":
                 processAiPrompt(i.getStringExtra("prompt"));
                 break;
+            case "OBSERVE": {
+                String p = i.getStringExtra("prompt");
+                if (p == null || p.trim().isEmpty()) {
+                    p = "Osserva attentamente l'immagine della camera e il contesto sensoriale: descrivi cosa vedi e reagisci in modo naturale.";
+                }
+                processAiPrompt(p);
+                break;
+            }
             case "AI_POLICY":
                 setAiPolicy(i.getStringExtra("policy"), i.getStringExtra("model"));
                 break;
@@ -614,6 +701,16 @@ public final class RobotService extends Service implements Link.Observer {
         cameraCount = 0;
         visionResult = null;
         lastSentDisplayRle = null;
+        lastInteractionId = null;
+        lastAmbientLuma = -1f;
+        lastButtonPressed = false;
+        directAudioLockUntilMs = 0L;
+        lastLocalReflexMs = 0L;
+        localReflexCycle = 0;
+        darkFrameStreak = 0;
+        autoHeadlightOn = false;
+        manualHeadlightOverride = false;
+        lastAiReactionTag = "";
         camera.reset();
         cubes.reset();
         writeStateJson();
@@ -667,6 +764,7 @@ public final class RobotService extends Service implements Link.Observer {
             .putBoolean("autonomous_wheels", autonomousWheels)
             .apply();
         if (enabled && link != null && link.stateAge() < 350 && !life) life(true);
+        if (enabled && motion && link != null && link.canArm() && !link.armed()) link.arm();
         event("personality", String.format(Locale.ITALY,
             "Vita autonoma=%s · voce=%s · gesti=%s · cingoli=%s",
             autonomous ? "ON" : "OFF",
@@ -702,10 +800,16 @@ public final class RobotService extends Service implements Link.Observer {
         event("expression", "Espressione impostata: " + expr.name() + " (" + expr.label + ")");
     }
 
+    private void playDirectAudio(Link l, List<byte[]> frames) {
+        if (l == null || frames == null || frames.isEmpty()) return;
+        l.playAudio(frames);
+        directAudioLockUntilMs = Math.max(directAudioLockUntilMs, Link.now() + frames.size() * 35L + 450L);
+    }
+
     public void playVocal(String kind) {
         String k = (kind == null || kind.trim().isEmpty()) ? "curious" : kind.trim().toLowerCase(Locale.ROOT);
         if (link != null) {
-            link.playAudio(AudioSynth.preset(k, personality.profile()));
+            playDirectAudio(link, AudioSynth.preset(k, personality.profile()));
         } else {
             event("rejected", "Collegamento al robot non attivo");
         }
@@ -718,7 +822,7 @@ public final class RobotService extends Service implements Link.Observer {
         if (text == null || text.trim().isEmpty()) return;
         if (link != null) {
             AudioSynth.VoiceProfile vp = AudioSynth.VoiceProfile.fromProfile(personality.profile());
-            link.playAudio(AudioSynth.speakText(text, vp, personality.expression(Link.now())));
+            playDirectAudio(link, AudioSynth.speakText(text, vp, personality.expression(Link.now())));
             event("audio", "Sintesi sillabica Cozmo (" + personality.profile().label + "): " + text.trim());
         } else {
             event("rejected", "Collegamento al robot non attivo");
@@ -790,12 +894,13 @@ public final class RobotService extends Service implements Link.Observer {
         long now = Link.now();
         personality.rewardInteraction("meet", now, 0f, 0.06f, 0.08f, 0.28f, 0.16f);
         personality.setExpression(Personality.Expression.HAPPY, 4500, now);
-        choreographer.startClip("GREET_FAMILIAR", AnimClip.Priority.USER_DIRECT, now);
+        choreographer.startClip("GREET_FAMILIAR", AnimClip.Priority.USER_DIRECT, now, true, false);
         if (link != null) {
             if (!life && link.stateAge() < 350) life(true);
             link.setBackpackColor("cyan");
+            lastAutoBackpack = "cyan";
             AudioSynth.VoiceProfile vp = AudioSynth.VoiceProfile.fromProfile(personality.profile());
-            link.playAudio(AudioSynth.speakText("ciao " + cleanName + "!", vp, Personality.Expression.HAPPY));
+            playDirectAudio(link, AudioSynth.speakText("ciao " + cleanName + "!", vp, Personality.Expression.HAPPY));
         }
         final float e = personality.energy, pl = personality.play, c = personality.comfort;
         dbExecutor.execute(() -> {
@@ -845,13 +950,17 @@ public final class RobotService extends Service implements Link.Observer {
             aiPolicy = GeminiLiveClient.AiTurnPolicy.fromName(rawPolicy);
         }
         if (rawModel != null && !rawModel.trim().isEmpty()) {
-            aiModel = rawModel.trim();
+            String normalized = GeminiLiveClient.normalizeModel(rawModel);
+            if (!normalized.equals(aiModel)) {
+                aiModel = normalized;
+                lastInteractionId = null;
+            }
         }
         getSharedPreferences("robot", 0).edit()
             .putString("ai_turn_policy", aiPolicy.name())
             .putString("ai_model", aiModel)
             .apply();
-        lastAiSummary = "Modalità AI: " + aiPolicy.labelIt + " (" + (hasGeminiKey() ? "chiave presente" : "solo offline") + ")";
+        lastAiSummary = "Modalità AI: " + aiPolicy.labelIt + " · " + aiModel + " (" + (hasGeminiKey() ? "chiave presente" : "solo offline") + ")";
         event("ai_policy", lastAiSummary);
         writeStateJson();
     }
@@ -873,33 +982,46 @@ public final class RobotService extends Service implements Link.Observer {
 
     public void clearGeminiKey() {
         Secrets.clearNamed(this, "gemini_live_key_v1");
+        lastInteractionId = null;
         lastAiSummary = "Chiave Gemini rimossa · attivo supervisore AI locale offline";
         event("ai_key", "Chiave Gemini rimossa");
         writeStateJson();
     }
 
     /**
-     * Finds a validated Internet Network distinct from Cozmo's local Wi-Fi (wlan1).
-     * Returns null if no separate Internet network is available, ensuring Gemini never touches wlan1.
+     * Finds a validated non-VPN Internet Network distinct from Cozmo's local Wi-Fi (wlan1).
+     * Prefers Wi-Fi Internet (wlan0), then other validated non-VPN networks (e.g. cellular).
+     * Returns null if no separate Internet network is available, ensuring Gemini never touches wlan1 or Tailscale VPN.
      */
     private SocketFactory findValidatedInternetSocketFactory() {
         if (cm == null) return null;
         try {
+            Network wifiValidated = null;
+            Network otherValidated = null;
             Network fallbackNet = null;
             for (Network net : cm.getAllNetworks()) {
                 if (net == null || net.equals(cozmoNetwork)) continue;
                 NetworkCapabilities caps = cm.getNetworkCapabilities(net);
                 if (caps == null || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)) continue;
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+                        || !caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)) continue;
                 LinkProperties lp = cm.getLinkProperties(net);
                 boolean isCozmoSubnet = lp != null && lp.getLinkAddresses().stream()
                     .anyMatch(a -> a.getAddress().getHostAddress().startsWith("172.31.1."));
                 if (isCozmoSubnet) continue;
                 if (caps.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) {
-                    return net.getSocketFactory();
+                    if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) {
+                        if (wifiValidated == null) wifiValidated = net;
+                    } else if (otherValidated == null) {
+                        otherValidated = net;
+                    }
+                } else if (fallbackNet == null) {
+                    fallbackNet = net;
                 }
-                if (fallbackNet == null) fallbackNet = net;
             }
-            return fallbackNet != null ? fallbackNet.getSocketFactory() : null;
+            Network chosen = wifiValidated != null ? wifiValidated
+                : (otherValidated != null ? otherValidated : fallbackNet);
+            return chosen != null ? chosen.getSocketFactory() : null;
         } catch (Exception e) {
             return null;
         }
@@ -923,7 +1045,7 @@ public final class RobotService extends Service implements Link.Observer {
         lastAiSummary = "Test connessione Gemini Live in corso...";
         writeStateJson();
         aiExecutor.execute(() -> {
-            String res = GeminiLiveClient.testConnection(key.trim(), netFactory, 6000);
+            String res = GeminiLiveClient.testConnection(key.trim(), netFactory, GeminiLiveClient.READ_TIMEOUT_MS);
             handler.post(() -> {
                 lastAiSummary = res;
                 event("ai_test", res);
@@ -937,7 +1059,7 @@ public final class RobotService extends Service implements Link.Observer {
         Wire.Telemetry t = telemetry;
         VisionAnalyzer.Result vr = visionResult;
         Link l = link;
-        List<String> recentEvents = memoryDb != null ? memoryDb.recentEpisodicEvents(3) : Collections.emptyList();
+        List<String> recentEvents = memoryDb != null ? memoryDb.recentEpisodicEvents(6) : Collections.emptyList();
         boolean allowDrive = autonomousWheels && l != null && l.armed() && t != null && !t.onCharger() && !t.unsafe();
         return new AiSupervisor.AiContextSnapshot(
             snap.profile, snap.energyBracket, snap.playBracket, snap.comfortBracket,
@@ -971,6 +1093,28 @@ public final class RobotService extends Service implements Link.Observer {
         applyIntention(intent, prompt, now);
     }
 
+    private static boolean clipMatchesExpression(String clipId, Personality.Expression expr) {
+        if (clipId == null || expr == null) return false;
+        switch (clipId) {
+            case "CURIOUS_INSPECT":
+                return expr == Personality.Expression.CURIOUS || expr == Personality.Expression.FOCUSED;
+            case "PLAY_CHEER":
+            case "CUBE_VICTORY":
+                return expr == Personality.Expression.EXCITED || expr == Personality.Expression.HAPPY;
+            case "GREET_FAMILIAR":
+            case "GREET_STRANGER":
+            case "HAPPY_COMFORT":
+                return expr == Personality.Expression.HAPPY || expr == Personality.Expression.EXCITED
+                    || expr == Personality.Expression.SURPRISED || expr == Personality.Expression.CURIOUS;
+            case "BORED_SIGH":
+                return expr == Personality.Expression.SAD || expr == Personality.Expression.SKEPTICAL;
+            case "SLEEPY_CHARGER":
+                return expr == Personality.Expression.SLEEPY || expr == Personality.Expression.NEUTRAL;
+            default:
+                return true;
+        }
+    }
+
     private void applyIntention(AiSupervisor.Intention intent, String prompt, long now) {
         if (intent == null) {
             event("ai_rejected", "Intenzione AI rifiutata dal supervisore");
@@ -978,10 +1122,24 @@ public final class RobotService extends Service implements Link.Observer {
         }
         lastIntention = intent;
         lastAiSummary = intent.summary(now);
-        personality.setExpression(intent.expression, Math.max(1500L, intent.expiresAtMs - now), now);
+        personality.setExpression(intent.expression, Math.max(5500L, intent.expiresAtMs - now), now);
+        lastSentDisplayRle = null;
+        boolean hasDirectAudio = !intent.sayText.isEmpty() || !"none".equals(intent.vocalization);
         if (intent.clipId != null && !intent.clipId.isEmpty()) {
-            choreographer.startClip(intent.clipId, AnimClip.Priority.AI_ACTION, now);
+            choreographer.startClip(intent.clipId, AnimClip.Priority.AI_ACTION, now,
+                hasDirectAudio, !clipMatchesExpression(intent.clipId, intent.expression));
         }
+        if (!"locale-sicurezza".equals(intent.source)
+                && intent.expression != Personality.Expression.SAD
+                && intent.expression != Personality.Expression.SLEEPY) {
+            if (intent.expression == Personality.Expression.HAPPY
+                    || intent.expression == Personality.Expression.EXCITED) {
+                personality.rewardInteraction("ai_social", now, 0f, 0.08f, 0.08f, 0.16f, 0.14f);
+            } else {
+                personality.rewardInteraction("ai_explore", now, 0f, 0.05f, 0.05f, 0.08f, 0.08f);
+            }
+        }
+        lastAiReactionTag = intent.expression.name() + "/" + intent.vocalization + "/" + intent.sayText;
         if (memoryDb != null && prompt != null && !prompt.trim().isEmpty()) {
             final String pTrim = prompt.trim();
             final String lbl = intent.expression.label;
@@ -995,14 +1153,20 @@ public final class RobotService extends Service implements Link.Observer {
         if (l != null && l.stateAge() < 350) {
             if (!life) life(true);
             l.setBackpackColor(intent.backpackColor);
+            lastAutoBackpack = intent.backpackColor;
             AudioSynth.VoiceProfile vp = AudioSynth.VoiceProfile.fromProfile(personality.profile());
             if (!intent.sayText.isEmpty()) {
-                l.playAudio(AudioSynth.speakText(intent.sayText, vp, intent.expression));
+                playDirectAudio(l, AudioSynth.speakText(intent.sayText, vp, intent.expression));
             } else if (!"none".equals(intent.vocalization)) {
-                l.playAudio(AudioSynth.preset(intent.vocalization, vp));
+                playDirectAudio(l, AudioSynth.preset(intent.vocalization, vp));
             }
-            if (Math.abs(intent.headDeltaRad) > 0.005f && l.armed() && t != null && !t.unsafe()) {
-                l.head(t.head + intent.headDeltaRad);
+            if (l.armed() && t != null && !t.unsafe()) {
+                if (Math.abs(intent.headDeltaRad) > 0.005f) {
+                    l.head(t.head + intent.headDeltaRad);
+                }
+                if (Math.abs(intent.liftDeltaMm) > 0.5f) {
+                    l.lift(t.lift + intent.liftDeltaMm);
+                }
             }
             if (intent.driveDurationMs > 0L && (Math.abs(intent.driveLeft) > 0.5f || Math.abs(intent.driveRight) > 0.5f)
                 && autonomousWheels && l.armed() && t != null && !t.onCharger() && !t.unsafe()) {
@@ -1035,17 +1199,21 @@ public final class RobotService extends Service implements Link.Observer {
         final AiSupervisor.AiContextSnapshot ctx = buildAiContext(prompt, nowMs);
         final String ctxJson = ctx.toCompactJson();
         final VisionAnalyzer.Result vr = visionResult;
-        final String visSummary = vr == null ? "nessuna" : vr.summary(cameraCount);
+        String baseVis = vr == null ? "nessuna" : vr.summary(cameraCount);
+        final String visSummary = lastAiReactionTag.isEmpty()
+            ? baseVis
+            : baseVis + "\nUltima reazione eseguita: " + lastAiReactionTag + " (varia espressione, suono, gesto testa/carrello e frase)";
         final byte[] jpeg = currentCameraJpeg();
         final String sysInstr = GeminiLiveClient.buildSystemInstruction(ctx.profile);
-        final String modelToUse = aiModel;
+        final String modelToUse = GeminiLiveClient.normalizeModel(aiModel);
+        final String prevId = lastInteractionId;
 
         aiExecutor.execute(() -> {
             try {
                 GeminiLiveClient.LiveAction act = GeminiLiveClient.queryOnce(
-                    apiKey.trim(), modelToUse, sysInstr, ctxJson, visSummary, prompt, jpeg,
+                    apiKey.trim(), modelToUse, sysInstr, prevId, ctxJson, visSummary, prompt, jpeg,
                     GeminiLiveClient.READ_TIMEOUT_MS, netFactory);
-                liveBackoffMs = 45_000L;
+                liveBackoffMs = 25_000L;
                 handler.post(() -> {
                     aiTurnInFlight.set(false);
                     if (generation != session) return;
@@ -1054,13 +1222,43 @@ public final class RobotService extends Service implements Link.Observer {
                         if (fallbackOnFailure) applyLocalDecision(prompt, cur, "locale-fallback");
                         return;
                     }
+                    if (!act.interactionId.isEmpty()) {
+                        lastInteractionId = act.interactionId;
+                    }
+                    if (!act.perception.isEmpty()) {
+                        lastPerception = act.perception;
+                        event("perception", act.perception);
+                    }
+                    if (Math.abs(act.gazeX) > 0.05f || Math.abs(act.gazeY) > 0.05f) {
+                        personality.setGazeTarget(act.gazeX, act.gazeY, cur + 3200L);
+                    }
+                    if (!manualHeadlightOverride && link != null && link.stateAge() < 350 && act.headlightCmd >= 0) {
+                        boolean hl = act.headlightCmd == 1;
+                        if (hl != autoHeadlightOn) {
+                            autoHeadlightOn = hl;
+                            link.setHeadLight(hl);
+                        }
+                    }
+                    if (!act.remember.trim().isEmpty() && memoryDb != null) {
+                        final String fact = act.remember.trim();
+                        dbExecutor.execute(() -> {
+                            MemoryDb db = memoryDb;
+                            if (db != null) db.recordEvent("memoria", fact);
+                        });
+                        event("memory", "Ricordo salvato: " + fact);
+                    }
                     AiSupervisor.Intention intent = act.toIntention(cur, ctx.allowAutonomousDrive);
                     if (intent != null) {
                         applyIntention(intent, prompt, cur);
+                        if (!act.perception.isEmpty()) {
+                            lastAiSummary = "Percezione: " + act.perception + "\n" + lastAiSummary;
+                            writeStateJson();
+                        }
                         event("live_ai", "Azione=" + act.name + " latenza=" + GeminiLiveClient.lastLatencyMs() + "ms"
+                            + (!act.perception.isEmpty() ? " · " + act.perception : "")
                             + (act.reason != null && !act.reason.isEmpty() ? " · " + act.reason : ""));
                     } else {
-                        event("ai_rejected", "Risposta Gemini Live rifiutata da AiSupervisor");
+                        event("ai_rejected", "Risposta Gemini rifiutata da AiSupervisor");
                         if (fallbackOnFailure) applyLocalDecision(prompt, cur, "locale-fallback");
                     }
                 });
@@ -1093,21 +1291,113 @@ public final class RobotService extends Service implements Link.Observer {
 
     void onVisionResult(VisionAnalyzer.Result vr) {
         visionResult = vr;
+        if (vr == null) return;
+        final long session = generation;
+        handler.post(() -> {
+            if (generation == session) {
+                handleVisionOnMain(vr);
+            }
+        });
+    }
+
+    private void handleVisionOnMain(VisionAnalyzer.Result vr) {
         long now = Link.now();
-        if (vr != null) {
-            if (vr.faceCount > 0) {
-                boolean wasAbsent = (now - lastFaceSeenMs) > 25_000L;
-                lastFaceSeenMs = now;
-                personality.setGazeTarget(vr.faceX * 5.5f, vr.faceY * 3.0f, now + 1800L);
-                if (wasAbsent && autonomous && aiPolicy == GeminiLiveClient.AiTurnPolicy.ON_DEMAND
-                    && (now - lastOnDemandTriggerMs) >= 25_000L && hasGeminiKey()) {
-                    lastOnDemandTriggerMs = now;
-                    runGeminiLiveTurn("Un volto è appena apparso davanti a Cozmo", false);
+        Link l = link;
+        Wire.Telemetry t = telemetry;
+        if (cameraActive && autonomous && !manualHeadlightOverride && l != null && l.stateAge() < 350) {
+            if (vr.darkScene) {
+                darkFrameStreak++;
+                if (darkFrameStreak == 4 && !autoHeadlightOn) {
+                    autoHeadlightOn = true;
+                    l.setHeadLight(true);
+                    event("light", "Luce frontale IR attivata automaticamente per scena scura");
                 }
-            } else if (vr.motionScore >= 0.30f) {
-                personality.setGazeTarget(vr.motionX * 5.0f, vr.motionY * 2.5f, now + 1200L);
+            } else {
+                darkFrameStreak = 0;
+                if (autoHeadlightOn && vr.meanLuma > 130f) {
+                    autoHeadlightOn = false;
+                    l.setHeadLight(false);
+                    event("light", "Luce frontale IR spenta: ambiente illuminato");
+                }
             }
         }
+        if (vr.faceCount > 0) {
+            boolean wasAbsent = (now - lastFaceSeenMs) > 25_000L;
+            lastFaceSeenMs = now;
+            personality.setGazeTarget(vr.faceX * 5.5f, vr.faceY * 3.0f, now + 1800L);
+            if (autonomousMotion && l != null && l.armed() && t != null && !t.unsafe()
+                    && (now - lastHeadTrackMs) >= 700L && Math.abs(vr.faceY) > 0.14f) {
+                lastHeadTrackMs = now;
+                l.head(t.head - vr.faceY * 0.14f);
+            }
+            if (wasAbsent && autonomous) {
+                if ((now - lastLocalReflexMs) >= 4500L) {
+                    lastLocalReflexMs = now;
+                    personality.setExpression(Personality.Expression.HAPPY, 3000L, now);
+                    if (autonomousVoice && l != null && l.getQueuedAudioFrames() == 0 && now >= directAudioLockUntilMs) {
+                        playDirectAudio(l, AudioSynth.preset("happy", personality.profile()));
+                    }
+                    if (autonomousMotion && l != null && l.armed() && t != null && !t.unsafe()) {
+                        l.lift(t.lift > 46f ? t.lift - 10f : t.lift + 12f);
+                    }
+                    event("vision_reflex", "Nuovo volto rilevato: saluto visivo");
+                }
+                if (aiPolicy != GeminiLiveClient.AiTurnPolicy.OFFLINE_ONLY
+                        && (now - lastOnDemandTriggerMs) >= 10_000L && hasGeminiKey()) {
+                    lastOnDemandTriggerMs = now;
+                    runGeminiLiveTurn("Un volto è appena apparso davanti alla camera di Cozmo: guardalo e reagisci.", false);
+                }
+            }
+        } else if (vr.motionScore >= 0.22f) {
+            personality.setGazeTarget(vr.motionX * 6.0f, vr.motionY * 3.0f, now + 1500L);
+            if (autonomousMotion && l != null && l.armed() && t != null && !t.unsafe()
+                    && (now - lastHeadTrackMs) >= 850L) {
+                lastHeadTrackMs = now;
+                float stepRad = Math.abs(vr.motionY) > 0.12f
+                    ? -vr.motionY * 0.14f
+                    : ((localReflexCycle % 2 == 0) ? 0.10f : -0.10f);
+                l.head(t.head + stepRad);
+            }
+            if (autonomous && vr.motionScore >= 0.32f && (now - lastLocalReflexMs) >= 4500L) {
+                lastLocalReflexMs = now;
+                int idx = Math.floorMod(localReflexCycle++, 3);
+                Personality.Expression[] exprs = {
+                    Personality.Expression.SURPRISED,
+                    Personality.Expression.EXCITED,
+                    Personality.Expression.CURIOUS
+                };
+                String[] vocals = {"surprised", "excited", "happy"};
+                personality.setExpression(exprs[idx], 3000L, now);
+                if (autonomousVoice && l != null && l.getQueuedAudioFrames() == 0 && now >= directAudioLockUntilMs) {
+                    playDirectAudio(l, AudioSynth.preset(vocals[idx], personality.profile()));
+                }
+                if (autonomousMotion && l != null && l.armed() && t != null && !t.unsafe()) {
+                    l.lift(t.lift > 46f ? t.lift - 10f : t.lift + 12f);
+                    if (autonomousWheels && !t.onCharger() && Math.abs(vr.motionX) > 0.15f) {
+                        final long curGen = generation;
+                        float turn = vr.motionX > 0f ? 28f : -28f;
+                        l.drive(turn, -turn);
+                        handler.postDelayed(() -> {
+                            if (generation == curGen && link != null) link.drive(0f, 0f);
+                        }, 180L);
+                    }
+                }
+                event("vision_reflex", "Riflesso movimento (" + exprs[idx].name() + ", " + vocals[idx] + ")");
+            }
+        }
+        if (autonomous && aiPolicy == GeminiLiveClient.AiTurnPolicy.AMBIENT_HYBRID
+                && (now - lastSceneTriggerMs) >= 9_000L && hasGeminiKey()) {
+            boolean strongMotion = vr.motionScore >= 0.30f;
+            boolean lightChanged = lastAmbientLuma >= 0f && Math.abs(vr.meanLuma - lastAmbientLuma) >= 18.0f;
+            if (strongMotion || lightChanged) {
+                lastSceneTriggerMs = now;
+                String cue = strongMotion
+                    ? "Movimento improvviso rilevato nella camera di Cozmo: guarda cosa si muove e reagisci."
+                    : "Cambio netto di luminosità davanti a Cozmo: osserva la scena e commenta brevemente.";
+                runGeminiLiveTurn(cue, false);
+            }
+        }
+        lastAmbientLuma = vr.meanLuma;
     }
 
     @Override
@@ -1304,15 +1594,20 @@ public final class RobotService extends Service implements Link.Observer {
             root.put("autonomousVoice", autonomousVoice);
             root.put("autonomousMotion", autonomousMotion);
             root.put("autonomousWheels", autonomousWheels);
+            root.put("headlight_on", autoHeadlightOn);
             root.put("activeBehavior", activeBehavior);
             root.put("lastBehaviorReason", lastBehaviorReason);
             AnimClip ac = choreographer.activeClip();
             root.put("activeClip", ac != null ? ac.id : "");
             root.put("aiPolicy", aiPolicy.name());
+            root.put("aiModel", aiModel);
+            root.put("aiSessionActive", lastInteractionId != null && !lastInteractionId.isEmpty());
             root.put("aiKeyConfigured", hasGeminiKey());
             root.put("aiTurnsCount", GeminiLiveClient.turnsCount());
             root.put("aiLastLatencyMs", GeminiLiveClient.lastLatencyMs());
             root.put("aiLastError", GeminiLiveClient.lastErrorCode());
+            root.put("lastPerception", lastPerception);
+            root.put("lastAiSummary", lastAiSummary);
 
             JSONObject pj = new JSONObject();
             pj.put("profile", snap.profile.name());
